@@ -400,7 +400,7 @@ const styles = StyleSheet.create({
   },
   commentsInput: {
     borderWidth: 1,
-    borderColor: '#4a4a4a',
+    borderColor: '#E5E7EB',
     borderRadius: 8,
     padding: 16,
     fontSize: 16,

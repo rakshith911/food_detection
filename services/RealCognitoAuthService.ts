@@ -77,10 +77,16 @@ class RealCognitoAuthService implements CognitoOTPService {
    * Uses Cognito's signUp flow which automatically sends a verification code
    */
   async sendEmailOTP(email: string): Promise<boolean> {
+    // Admin/Apple review bypass — no email is sent, fixed OTP accepted
+    if (email.toLowerCase() === 'mahishi911@gmail.com') {
+      console.log('[Auth] Admin account detected — skipping email OTP send');
+      return true;
+    }
+
     try {
       // Ensure Amplify is configured before use
       this.ensureAmplifyConfigured();
-      
+
       console.log('═══════════════════════════════════════════');
       console.log('📧 SENDING EMAIL OTP (AWS COGNITO)');
       console.log('═══════════════════════════════════════════');
@@ -249,10 +255,21 @@ class RealCognitoAuthService implements CognitoOTPService {
    * Verify email OTP using AWS Cognito
    */
   async verifyEmailOTP(email: string, otp: string): Promise<{ success: boolean; userId?: string }> {
+    // Admin/Apple review bypass — only accept the fixed OTP, no Cognito call
+    if (email.toLowerCase() === 'mahishi911@gmail.com') {
+      if (otp === '795084') {
+        console.log('[Auth] Admin account — OTP accepted');
+        return { success: true, userId: 'admin-mahishi911-apple-review' };
+      } else {
+        console.log('[Auth] Admin account — incorrect OTP');
+        throw new Error('Invalid verification code. Please try again.');
+      }
+    }
+
     try {
       // Ensure Amplify is configured before use
       this.ensureAmplifyConfigured();
-      
+
       console.log('═══════════════════════════════════════════');
       console.log('🔍 VERIFYING EMAIL OTP (AWS COGNITO)');
       console.log('═══════════════════════════════════════════');

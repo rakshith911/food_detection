@@ -52,8 +52,21 @@ class UserService {
    */
   async createUserAccount(email: string, cognitoUserId?: string): Promise<UserAccount> {
     try {
+      // If an account already exists for this email, return it as-is so that
+      // profile completion state and userId are preserved across logins.
+      if (STORAGE_MODE === 'local') {
+        const existing = await AsyncStorage.getItem(this.USER_ACCOUNT_KEY);
+        if (existing) {
+          const parsed: UserAccount = JSON.parse(existing);
+          if (parsed.email === email) {
+            console.log('[UserService] Returning existing account (preserving state):', parsed.userId);
+            return parsed;
+          }
+        }
+      }
+
       let userId: string;
-      
+
       if (STORAGE_MODE === 'dynamodb' && cognitoUserId) {
         // Use Cognito user ID when using DynamoDB
         userId = cognitoUserId;
@@ -62,7 +75,7 @@ class UserService {
         // Generate local user ID for local storage
         userId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       }
-      
+
       const userAccount: UserAccount = {
         userId,
         email,
@@ -74,9 +87,9 @@ class UserService {
       if (STORAGE_MODE === 'local') {
         await AsyncStorage.setItem(this.USER_ACCOUNT_KEY, JSON.stringify(userAccount));
       }
-      
+
       console.log(`[UserService] User account created (${STORAGE_MODE}):`, userId);
-      
+
       return userAccount;
     } catch (error) {
       console.error('[UserService] Error creating user account:', error);
