@@ -19,9 +19,12 @@ import os
 import re
 import tempfile
 import traceback
+import urllib.request
+import urllib.error
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Optional
 
 import boto3
 
@@ -46,7 +49,7 @@ GEMINI_MODELS = [
     'gemini-1.5-pro',
 ]
 
-NUTRITION_PROMPT = """You are a nutrition expert. Analyze this food image or video and return a detailed nutritional breakdown.
+BASE_NUTRITION_PROMPT = """You are a nutrition expert. Analyze this food image or video and return a detailed nutritional breakdown.
 
 Return ONLY valid JSON with this exact structure (no markdown, no extra text):
 {
@@ -74,6 +77,63 @@ Rules:
 - If you cannot identify food, return an empty items array and zero totals
 - Output ONLY the JSON object, nothing else
 """
+
+
+def build_nutrition_prompt(user_context: dict) -> str:
+    """Build a Gemini prompt incorporating user questionnaire answers."""
+    prompt = BASE_NUTRITION_PROMPT
+
+    if not user_context:
+        return prompt
+
+    additions = []
+
+    # Hidden / missing ingredients
+    hidden = user_context.get('hidden_ingredients', [])
+    if hidden:
+        hidden_text = ', '.join(
+            f"{i['name']} ({i['quantity']})" if i.get('quantity') else i['name']
+            for i in hidden if i.get('name')
+        )
+        if hidden_text:
+            additions.append(
+                f"The user has indicated that the following ingredients are present but may not be "
+                f"visible in the image: {hidden_text}. "
+                "Include each of these as a separate item in your analysis and estimate their "
+                "calories based on the quantity provided."
+            )
+
+    # Extras / cooking additions
+    extras = user_context.get('extras', [])
+    if extras:
+        extras_text = ', '.join(
+            f"{i['name']} ({i['quantity']})" if i.get('quantity') else i['name']
+            for i in extras if i.get('name')
+        )
+        if extras_text:
+            additions.append(
+                f"The user has indicated these extras or cooking additions that add calories: "
+                f"{extras_text}. Include these in your nutritional calculation."
+            )
+
+    # Recipe / menu description
+    recipe = user_context.get('recipe_description', '').strip()
+    if recipe:
+        additions.append(
+            f"The user provided this recipe or menu description: \"{recipe}\". "
+            "Use this to improve the accuracy of your portion and calorie estimates."
+        )
+
+    if additions:
+        prompt += "\nIMPORTANT ADDITIONAL CONTEXT PROVIDED BY THE USER:\n"
+        for addition in additions:
+            prompt += f"- {addition}\n"
+        prompt += (
+            "\nFactor all of the above context into your analysis. "
+            "The user-provided information should take priority over what is visible in the image alone.\n"
+        )
+
+    return prompt
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -130,9 +190,40 @@ def parse_gemini_json(text: str) -> dict:
     return json.loads(text.strip())
 
 
+def send_expo_push_notification(push_token: str, title: str, body: str, data: Optional[dict] = None):
+    """Send push notification via Expo Push API."""
+    if not push_token:
+        print('[PushNotif] ⚠️ No push token — skipping notification')
+        return
+    print(f'[PushNotif] Sending push notification to token ending ...{push_token[-12:]}')
+    print(f'[PushNotif]   title: {title}')
+    print(f'[PushNotif]   body:  {body}')
+    payload = {
+        "to": push_token,
+        "title": title,
+        "body": body,
+        "sound": "default",
+        "data": data or {},
+    }
+    req = urllib.request.Request(
+        "https://exp.host/--/api/v2/push/send",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            response_body = resp.read().decode("utf-8")
+            print(f'[PushNotif] ✅ Push sent. Expo response: {response_body[:300]}')
+    except urllib.error.HTTPError as e:
+        print(f'[PushNotif] ❌ Push send failed (HTTP {e.code}): {e.read().decode("utf-8")[:300]}')
+    except Exception as e:
+        print(f'[PushNotif] ❌ Push send failed: {e}')
+
+
 # ── Gemini call ───────────────────────────────────────────────────────────────
 
-def call_gemini(local_path: str, mime: str) -> str:
+def call_gemini(local_path: str, mime: str, prompt: str) -> str:
     """Send media to Gemini and return raw response text."""
     try:
         from google import genai as genai_new
@@ -154,7 +245,7 @@ def call_gemini(local_path: str, mime: str) -> str:
                     file_bytes = f.read()
                 parts = [
                     types.Part(inline_data=types.Blob(data=file_bytes, mime_type=mime)),
-                    types.Part(text=NUTRITION_PROMPT),
+                    types.Part(text=prompt),
                 ]
                 response = client.models.generate_content(
                     model=model_name,
@@ -166,7 +257,7 @@ def call_gemini(local_path: str, mime: str) -> str:
                 myfile = client.files.upload(file=local_path)
                 response = client.models.generate_content(
                     model=model_name,
-                    contents=[myfile, NUTRITION_PROMPT],
+                    contents=[myfile, prompt],
                 )
 
             text = (response.text or '').strip()
@@ -206,7 +297,8 @@ def normalise_results(data: dict) -> tuple[list, dict, str]:
         nutrition_summary = {
             'total_calories_kcal':  float(ns.get('total_calories_kcal') or 0),
             'total_mass_g':         float(ns.get('total_mass_g') or 0),
-            'num_food_items':       int(ns.get('num_food_items') or len(items)),
+            # Always derive from actual items — Gemini sometimes returns non-zero counts with empty items
+            'num_food_items':       len(items),
             'total_food_volume_ml': float(ns.get('total_food_volume_ml') or 0),
         }
     else:
@@ -226,11 +318,25 @@ def normalise_results(data: dict) -> tuple[list, dict, str]:
 # ── Lambda entrypoint ─────────────────────────────────────────────────────────
 
 def lambda_handler(event, context):
-    job_id   = event.get('job_id')
-    s3_bucket = event.get('s3_bucket')
-    s3_key   = event.get('s3_key')
+    job_id     = event.get('job_id')
+    s3_bucket  = event.get('s3_bucket')
+    s3_key     = event.get('s3_key')
+    push_token = event.get('push_token')
+    # user_context may arrive as a dict (direct Lambda invoke) or JSON string (via SQS/DynamoDB)
+    raw_ctx    = event.get('user_context')
+    if isinstance(raw_ctx, str):
+        try:
+            user_context = json.loads(raw_ctx)
+        except (json.JSONDecodeError, TypeError):
+            user_context = {}
+    elif isinstance(raw_ctx, dict):
+        user_context = raw_ctx
+    else:
+        user_context = {}
 
     print(f'[gemini_processor] job={job_id}  s3://{s3_bucket}/{s3_key}')
+    print(f'[PushNotif] Job {job_id} — push token present in Lambda event: {bool(push_token)}')
+    print(f'[gemini_processor] user_context keys: {list(user_context.keys()) if user_context else "none"}')
 
     try:
         update_job_status(job_id, 'processing', progress=10)
@@ -253,12 +359,16 @@ def lambda_handler(event, context):
             print(f'[gemini_processor] Downloaded {file_size_mb:.1f} MB  mime={mime}')
             update_job_status(job_id, 'processing', progress=30)
 
-            # 2. Call Gemini
+            # 2. Build prompt (incorporates user questionnaire answers if provided)
+            prompt = build_nutrition_prompt(user_context)
+            print(f'[gemini_processor] Prompt length: {len(prompt)} chars')
+
+            # 3. Call Gemini
             print(f'[gemini_processor] Calling Gemini...')
-            response_text = call_gemini(local_path, mime)
+            response_text = call_gemini(local_path, mime, prompt)
             update_job_status(job_id, 'processing', progress=70)
 
-            # 3. Parse response
+            # 4. Parse response
             try:
                 data = parse_gemini_json(response_text)
             except json.JSONDecodeError as e:
@@ -266,13 +376,13 @@ def lambda_handler(event, context):
 
             items, nutrition_summary, meal_name = normalise_results(data)
 
-            # 4. Build detected_foods list (lightweight, stored in DynamoDB)
+            # 5. Build detected_foods list (lightweight, stored in DynamoDB)
             detected_foods = [
                 {'name': i['food_name'], 'calories': i['total_calories']}
                 for i in items
             ]
 
-            # 5. Build full result for S3 (same structure the existing results_handler returns)
+            # 6. Build full result for S3 (same structure the existing results_handler returns)
             full_result = {
                 'job_id':            job_id,
                 'meal_name':         meal_name,
@@ -282,7 +392,7 @@ def lambda_handler(event, context):
                 'detected_foods':    detected_foods,
             }
 
-            # 6. Upload results.json to S3
+            # 7. Upload results.json to S3
             results_key = f'results/{job_id}/results.json'
             s3.put_object(
                 Bucket=S3_RESULTS_BUCKET,
@@ -292,7 +402,7 @@ def lambda_handler(event, context):
             )
             print(f'[gemini_processor] Uploaded results to s3://{S3_RESULTS_BUCKET}/{results_key}')
 
-            # 7. Mark job completed in DynamoDB
+            # 8. Mark job completed in DynamoDB
             update_job_status(
                 job_id,
                 'completed',
@@ -305,6 +415,13 @@ def lambda_handler(event, context):
             )
 
             total_kcal = nutrition_summary['total_calories_kcal']
+            if push_token:
+                send_expo_push_notification(
+                    push_token=push_token,
+                    title='UKcal Analysis Complete',
+                    body=f'Your analysis is ready ({int(total_kcal)} kcal).',
+                    data={'job_id': job_id, 'status': 'completed'},
+                )
             print(f'[gemini_processor] Done: {len(items)} items, {total_kcal:.0f} kcal')
             return {'job_id': job_id, 'status': 'completed'}
 

@@ -13,6 +13,7 @@ import {
   Keyboard,
   TouchableWithoutFeedback,
   KeyboardAvoidingView,
+  Alert,
 } from 'react-native';
 import { useEvent, useEventListener } from 'expo';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -20,7 +21,6 @@ import * as Notifications from 'expo-notifications';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import { addAnalysis, updateAnalysis, updateAnalysisProgress } from '../store/slices/historySlice';
-import { mockFoodDetectionService } from '../services/MockFoodDetection';
 import { nutritionAnalysisAPI } from '../services/NutritionAnalysisAPI';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -60,6 +60,12 @@ async function scheduleAnalysisCompleteNotification(mealName: string) {
   }
 }
 
+interface IngredientRow {
+  id: string;
+  name: string;
+  quantity: string;
+}
+
 interface PreviewScreenProps {
   imageUri?: string;
   videoUri?: string;
@@ -70,15 +76,14 @@ interface PreviewScreenProps {
 /** Renders video preview using expo-video (only mounted when uri is set so useVideoPlayer runs with a valid source). */
 function PreviewVideo({ uri, style }: { uri: string; style: object }) {
   const player = useVideoPlayer(uri, (p) => {
-    p.loop = false; // Stop at end; user taps play to start again
+    p.loop = false;
   });
   const playingPayload = useEvent(player, 'playingChange', { isPlaying: player.playing });
   const isPlaying = playingPayload?.isPlaying ?? false;
 
-  // When video ends, pause and reset to start so it stays stopped until user taps play
   useEventListener(player, 'playToEnd', () => {
     player.pause();
-    player.replay(); // seek to start so next play starts from beginning
+    player.replay();
   });
 
   return (
@@ -111,6 +116,15 @@ function PreviewVideo({ uri, style }: { uri: string; style: object }) {
 export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }: PreviewScreenProps) {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  const [hiddenIngrYes, setHiddenIngrYes] = useState(false);
+  const [hiddenIngredients, setHiddenIngredients] = useState<IngredientRow[]>([
+    { id: '1', name: '', quantity: '' },
+  ]);
+  const [extrasYes, setExtrasYes] = useState(false);
+  const [extras, setExtras] = useState<IngredientRow[]>([
+    { id: '1', name: '', quantity: '' },
+  ]);
   const [textInput, setTextInput] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isTextInputFocused, setIsTextInputFocused] = useState(false);
@@ -122,16 +136,11 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
   const textInputRef = useRef<TextInput>(null);
   const scrollViewRef = useRef<ScrollView>(null);
 
-
-  
-  // Use business name as display name, fallback to email if business name not available
-  // Only use businessName if it exists and is not empty
-  const userName = (businessProfile?.businessName && businessProfile.businessName.trim()) 
-    ? businessProfile.businessName 
+  const userName = (businessProfile?.businessName && businessProfile.businessName.trim())
+    ? businessProfile.businessName
     : (user?.email?.split('@')[0] || 'User');
   const displayName = userName.charAt(0).toUpperCase() + userName.slice(1);
 
-  // Get current date for last login (mock)
   const lastLoginDate = new Date().toLocaleDateString('en-US', {
     month: 'long',
     day: 'numeric',
@@ -142,6 +151,44 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
     minute: '2-digit',
     hour12: true,
   });
+
+  const handleBack = () => {
+    if (step === 1) {
+      onBack();
+    } else {
+      setStep((s) => (s - 1) as 1 | 2 | 3 | 4);
+    }
+  };
+
+  const handleNext = () => {
+    setStep((s) => (s + 1) as 1 | 2 | 3 | 4);
+  };
+
+  const addIngredientRow = (type: 'hidden' | 'extras') => {
+    const newRow: IngredientRow = { id: Date.now().toString(), name: '', quantity: '' };
+    if (type === 'hidden') {
+      setHiddenIngredients((prev) => [...prev, newRow]);
+    } else {
+      setExtras((prev) => [...prev, newRow]);
+    }
+  };
+
+  const updateIngredientRow = (
+    type: 'hidden' | 'extras',
+    id: string,
+    field: 'name' | 'quantity',
+    value: string
+  ) => {
+    if (type === 'hidden') {
+      setHiddenIngredients((prev) =>
+        prev.map((r) => (r.id === id ? { ...r, [field]: value } : r))
+      );
+    } else {
+      setExtras((prev) =>
+        prev.map((r) => (r.id === id ? { ...r, [field]: value } : r))
+      );
+    }
+  };
 
   const handleSubmit = async () => {
     if (isSubmitting) return;
@@ -154,7 +201,6 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
       let analysisResult;
       let result;
 
-      // Create analysis entry immediately with "analyzing" status
       if (user?.email) {
         const tempAnalysis = {
           type: analysisType,
@@ -181,9 +227,6 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
           analysisId = result_action.payload.id;
           setCurrentAnalysisId(analysisId);
 
-          // Navigate to Results page immediately after creating the entry
-          // Analysis will continue in background and update progress on the card via Redux
-          // Use setTimeout to ensure navigation happens after Redux state update
           setTimeout(() => {
             if (onAnalyze) {
               onAnalyze();
@@ -192,12 +235,38 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
         }
       }
 
-      // Continue analysis in background - this will continue even after navigation
-      // because Redux updates are global and async operations continue
-      // Use real API for both video and image analysis
       if (videoUri || imageUri) {
         const mediaType = videoUri ? 'video' : 'image';
         console.log(`[PreviewScreen] Starting real ${mediaType} analysis...`);
+
+        // Build user context from questionnaire answers
+        const userContext: Record<string, any> = {};
+
+        if (hiddenIngrYes) {
+          const filledHidden = hiddenIngredients.filter((r) => r.name.trim());
+          if (filledHidden.length > 0) {
+            userContext.hidden_ingredients = filledHidden.map((r) => ({
+              name: r.name.trim(),
+              quantity: r.quantity.trim(),
+            }));
+          }
+        }
+
+        if (extrasYes) {
+          const filledExtras = extras.filter((r) => r.name.trim());
+          if (filledExtras.length > 0) {
+            userContext.extras = filledExtras.map((r) => ({
+              name: r.name.trim(),
+              quantity: r.quantity.trim(),
+            }));
+          }
+        }
+
+        if (textInput.trim()) {
+          userContext.recipe_description = textInput.trim();
+        }
+
+        console.log('[PreviewScreen] User context:', JSON.stringify(userContext));
 
         const filename = videoUri
           ? `video_${Date.now()}.mp4`
@@ -205,8 +274,6 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
 
         const updateProgress = (status: string) => {
           if (!analysisId) return;
-          
-          // Update progress based on status messages
           if (status.includes('Preparing')) {
             dispatch(updateAnalysisProgress({ id: analysisId, progress: 10, status: 'analyzing' }));
           } else if (status.includes('Uploading')) {
@@ -214,12 +281,11 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
           } else if (status.includes('Starting')) {
             dispatch(updateAnalysisProgress({ id: analysisId, progress: 40, status: 'analyzing' }));
           } else if (status.includes('Processing')) {
-            // Incrementally increase progress during processing
             const match = status.match(/\((\d+)\/(\d+)\)/);
             if (match) {
               const current = parseInt(match[1], 10);
               const total = parseInt(match[2], 10);
-              const processingProgress = 50 + Math.floor((current / total) * 40); // 50-90%
+              const processingProgress = 50 + Math.floor((current / total) * 40);
               dispatch(updateAnalysisProgress({ id: analysisId, progress: processingProgress, status: 'analyzing' }));
             } else {
               dispatch(updateAnalysisProgress({ id: analysisId, progress: 60, status: 'analyzing' }));
@@ -229,6 +295,16 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
           }
         };
 
+        const onJobCreated = (jobId: string) => {
+          if (!analysisId || !user?.email) return;
+          console.log('[PreviewScreen] Job created — persisting job_id immediately:', jobId);
+          dispatch(updateAnalysis({
+            userEmail: user.email,
+            analysisId,
+            updates: { job_id: jobId },
+          }));
+        };
+
         const apiResult = videoUri
           ? await nutritionAnalysisAPI.analyzeVideo(
               videoUri,
@@ -236,7 +312,9 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
               (status) => {
                 console.log('[PreviewScreen] Progress:', status);
                 updateProgress(status);
-              }
+              },
+              onJobCreated,
+              userContext
             )
           : await nutritionAnalysisAPI.analyzeImage(
               imageUri!,
@@ -244,45 +322,20 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
               (status) => {
                 console.log('[PreviewScreen] Progress:', status);
                 updateProgress(status);
-              }
+              },
+              onJobCreated,
+              userContext
             );
 
         if (!apiResult || !apiResult.nutrition_summary) {
-          // If image analysis failed, fall back to mock service
-          if (imageUri) {
-            console.warn('[PreviewScreen] Image API failed, falling back to mock service');
-            const mockResult = mockFoodDetectionService.analyzeFood(
-              textInput.trim() || undefined,
-              analysisType
-            );
-            result = mockFoodDetectionService.formatAnalysisResult(mockResult);
-
-            // Convert mock result to the same format as API result
-            analysisResult = {
-              totalCalories: mockResult.totalCalories,
-              totalProtein: mockResult.totalProtein,
-              totalCarbs: mockResult.totalCarbs,
-              totalFat: mockResult.totalFat,
-              dishContents: mockResult.detectedFoods.map((food, index) => ({
-                id: `${Date.now()}_${index}`,
-                name: food.name,
-                weight: food.portion || '',
-                calories: food.calories.toString(),
-              })),
-              mealName: mockResult.detectedFoods[0]?.name || 'Analyzed Meal',
-            };
-          } else {
-            throw new Error(`${mediaType} analysis failed or returned no results`);
-          }
+          throw new Error(`${mediaType} analysis failed or returned no results`);
         } else {
           console.log('[PreviewScreen] API Result nutrition_summary:', apiResult.nutrition_summary);
           console.log('[PreviewScreen] API Result items:', apiResult.items);
 
-          // Convert API result to app format
           let dishContents;
           let mealName = 'Analyzed Meal';
 
-          // Use items array if available (extracted by API service)
           if (apiResult.items && apiResult.items.length > 0) {
             console.log('[PreviewScreen] Using extracted items:', apiResult.items.length, 'items');
             dishContents = apiResult.items.map((item: any, index: number) => ({
@@ -292,9 +345,7 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
               calories: Math.round(item.total_calories || item.calories || 0).toString(),
             }));
             mealName = apiResult.items[0]?.food_name || 'Analyzed Meal';
-          } 
-          // Fallback: Use detailed_results.items if available
-          else if (apiResult.detailed_results?.items && apiResult.detailed_results.items.length > 0) {
+          } else if (apiResult.detailed_results?.items && apiResult.detailed_results.items.length > 0) {
             console.log('[PreviewScreen] Using detailed_results.items');
             dishContents = apiResult.detailed_results.items.map((item: any, index: number) => ({
               id: `${Date.now()}_${index}`,
@@ -303,35 +354,21 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
               calories: Math.round(item.total_calories || item.calories || 0).toString(),
             }));
             mealName = apiResult.detailed_results.items[0]?.food_name || 'Analyzed Meal';
-          } 
-          // Last fallback: Create items based on num_food_items with distributed calories
-          else {
-            const itemCount = apiResult.nutrition_summary?.num_food_items || 1;
-            const totalCalories = apiResult.nutrition_summary?.total_calories_kcal || 0;
-            const avgCalories = itemCount > 0 ? Math.round(totalCalories / itemCount) : 0;
-
-            console.log(`[PreviewScreen] Creating ${itemCount} food items from summary (avg ${avgCalories} kcal each)`);
-
-            dishContents = Array.from({ length: itemCount }, (_, index) => ({
-              id: `${Date.now()}_${index}`,
-              name: itemCount === 1 ? 'Detected Food' : `Food Item ${index + 1}`,
-              weight: '',
-              calories: avgCalories.toString(),
-            }));
-
-            mealName = itemCount === 1 ? 'Detected Food' : `Meal (${itemCount} items)`;
+          } else {
+            console.log('[PreviewScreen] No food items found in response');
+            dishContents = [{ id: `${Date.now()}_0`, name: 'No food detected', weight: '', calories: '0' }];
+            mealName = 'No food detected';
           }
 
-          // Calculate total calories from items if nutrition_summary is incomplete
           const totalCaloriesFromItems = apiResult.items?.reduce(
             (sum: number, item: any) => sum + (item.total_calories || item.calories || 0), 0
           ) || apiResult.nutrition_summary?.total_calories_kcal || 0;
 
           analysisResult = {
             totalCalories: totalCaloriesFromItems,
-            totalProtein: 0, // Not available in current API response
-            totalCarbs: 0, // Not available in current API response
-            totalFat: 0, // Not available in current API response
+            totalProtein: 0,
+            totalCarbs: 0,
+            totalFat: 0,
             dishContents,
             mealName,
           };
@@ -340,11 +377,11 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
 
           result = {
             summary: `Detected ${numItems} food items with ${Math.round(totalCaloriesFromItems)} calories`,
-            nutrition_summary: apiResult.nutrition_summary || { 
+            nutrition_summary: apiResult.nutrition_summary || {
               total_calories_kcal: totalCaloriesFromItems,
               num_food_items: numItems,
               total_mass_g: 0,
-              total_food_volume_ml: 0
+              total_food_volume_ml: 0,
             },
             detailed_results: apiResult.detailed_results,
             segmented_images: apiResult.segmented_images,
@@ -355,7 +392,6 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
         throw new Error('No image or video URI provided');
       }
 
-      // Update the analysis entry with final results
       if (user?.email && analysisId) {
         const result_action = await dispatch(updateAnalysis({
           userEmail: user.email,
@@ -384,7 +420,6 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
         }
       }
 
-      // Update streak
       try {
         const savedStreak = await AsyncStorage.getItem('streakDays');
         const currentStreak = savedStreak ? parseInt(savedStreak, 10) : 0;
@@ -392,70 +427,26 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
       } catch (error) {
         console.error('Error saving streak:', error);
       }
+    } catch (error: any) {
+      console.warn('[PreviewScreen] Analysis error:', error?.message);
 
-      // Note: Navigation already happened after creating the entry
-      // Analysis continues in background and updates progress via Redux
-    } catch (error) {
-      console.error('Error analyzing:', error);
-      
-      // Mark analysis as failed if we have an ID
-      if (analysisId && user?.email) {
-        dispatch(updateAnalysisProgress({ id: analysisId, progress: 0, status: 'failed' }));
-      }
-
-      // Fallback to mock service
-      const analysisType = imageUri ? 'image' : 'video';
-      const analysisResult = mockFoodDetectionService.analyzeFood(
-        textInput.trim() || undefined,
-        analysisType
-      );
-      const result = mockFoodDetectionService.formatAnalysisResult(analysisResult);
-
-      // If we have an analysis ID, update it; otherwise create new one
-      if (user?.email) {
-        if (analysisId) {
-          await dispatch(updateAnalysis({
-            userEmail: user.email,
-            analysisId: analysisId,
-            updates: {
-              analysisResult: JSON.parse(JSON.stringify(result)),
-              nutritionalInfo: {
-                calories: Number(analysisResult.totalCalories) || 0,
-                protein: Number(analysisResult.totalProtein) || 0,
-                carbs: Number(analysisResult.totalCarbs) || 0,
-                fat: Number(analysisResult.totalFat) || 0,
-              },
-analysisStatus: 'completed',
-            analysisProgress: 100,
-          },
-        }));
-          scheduleAnalysisCompleteNotification((analysisResult as any).mealName ?? '');
-        } else {
-          await dispatch(addAnalysis({
-            userEmail: user.email,
-            analysis: {
-              type: analysisType,
-              imageUri: imageUri || undefined,
-              videoUri: videoUri || undefined,
-              textDescription: textInput.trim() || undefined,
-              analysisResult: JSON.parse(JSON.stringify(result)),
-              nutritionalInfo: {
-                calories: Number(analysisResult.totalCalories) || 0,
-                protein: Number(analysisResult.totalProtein) || 0,
-                carbs: Number(analysisResult.totalCarbs) || 0,
-                fat: Number(analysisResult.totalFat) || 0,
-              },
-              analysisStatus: 'completed',
-              analysisProgress: 100,
-            },
-          }));
-          scheduleAnalysisCompleteNotification((analysisResult as any).mealName ?? '');
+      if (error?.message === 'Analysis timeout') {
+        console.log('[PreviewScreen] Timeout — job remains queued in SQS, analysisId:', analysisId);
+        Alert.alert(
+          'Analysis Queued',
+          'We will notify you when your results are ready.',
+          [{ text: 'OK' }]
+        );
+      } else {
+        console.log('[PreviewScreen] Real failure — marking analysisId as failed:', analysisId, 'error:', error?.message);
+        if (analysisId && user?.email) {
+          dispatch(updateAnalysisProgress({ id: analysisId, progress: 0, status: 'failed' }));
         }
-      }
-
-      // Navigate to Results page even on error (fallback analysis was created)
-      if (onAnalyze) {
-        onAnalyze();
+        Alert.alert(
+          'Analysis Failed',
+          'We were unable to analyse your image at this time. Please try again later.',
+          [{ text: 'OK' }]
+        );
       }
     } finally {
       setIsSubmitting(false);
@@ -463,103 +454,279 @@ analysisStatus: 'completed',
     }
   };
 
-  return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <StatusBar barStyle="light-content" />
+  const renderRadioGroup = (value: boolean, onChange: (v: boolean) => void) => (
+    <View style={styles.radioContainer}>
+      <TouchableOpacity style={styles.radioOption} onPress={() => onChange(true)}>
+        <View style={[styles.radioOuter, value && styles.radioOuterSelected]}>
+          {value && <View style={styles.radioInner} />}
+        </View>
+        <Text style={styles.radioLabel}>Yes</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.radioOption} onPress={() => onChange(false)}>
+        <View style={[styles.radioOuter, !value && styles.radioOuterSelected]}>
+          {!value && <View style={styles.radioInner} />}
+        </View>
+        <Text style={styles.radioLabel}>No</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  const renderIngredientTable = (
+    type: 'hidden' | 'extras',
+    rows: IngredientRow[],
+    headerLabel: string
+  ) => (
+    <View style={styles.ingredientSection}>
+      <View style={styles.tableDivider} />
+      <View style={styles.tableHeader}>
+        <Text style={[styles.tableHeaderText, { flex: 5 }]}>{headerLabel}</Text>
+        <Text style={[styles.tableHeaderText, { flex: 4 }]}>Quantity</Text>
+        <Text style={[styles.tableHeaderText, { flex: 2, textAlign: 'right' }]}>Action</Text>
+      </View>
+      {rows.map((row) => (
+        <View key={row.id} style={styles.tableRow}>
+          <TextInput
+            style={[styles.tableInput, { flex: 5 }]}
+            placeholder="Ingredient Name"
+            value={row.name}
+            onChangeText={(v) => updateIngredientRow(type, row.id, 'name', v)}
+            placeholderTextColor="#999999"
+          />
+          <View style={{ width: 8 }} />
+          <TextInput
+            style={[styles.tableInput, { flex: 4 }]}
+            placeholder="Weight or volume"
+            value={row.quantity}
+            onChangeText={(v) => updateIngredientRow(type, row.id, 'quantity', v)}
+            placeholderTextColor="#999999"
+          />
+          <View style={[{ flex: 2, alignItems: 'center', justifyContent: 'center' }]}>
+            <Ionicons name="pencil" size={18} color="#7BA21B" />
+          </View>
+        </View>
+      ))}
+      <View style={styles.addIngredientRow}>
+        <TouchableOpacity
+          style={styles.addIngredientButton}
+          onPress={() => addIngredientRow(type)}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="add-circle" size={18} color="#FFFFFF" />
+          <Text style={styles.addIngredientText}>Add Ingredient</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  const renderStep1 = () => (
+    <>
+      <ScrollView
+        ref={scrollViewRef}
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        bounces={true}
+      >
+        {/* Image/Video Preview */}
+        <View style={styles.previewContainer}>
+          {imageUri ? (
+            <OptimizedImage
+              source={{ uri: imageUri }}
+              style={styles.previewMedia}
+              resizeMode="cover"
+              cachePolicy="memory-disk"
+              priority="high"
+            />
+          ) : videoUri ? (
+            <PreviewVideo uri={videoUri} style={styles.previewMedia} />
+          ) : null}
+          <View style={styles.darkOverlay} />
+          <View style={styles.backButtonContainer}>
+            <View style={styles.backButtonBackground}>
+              <VectorBackButtonCircle onPress={onBack} size={24} />
+            </View>
+          </View>
+        </View>
+
+        {/* Instruction Text */}
+        <View style={styles.instructionContainer}>
+          <Text style={styles.instructionTitle}>Please check the snap.</Text>
+          <View style={styles.bulletList}>
+            <View style={styles.bulletItem}>
+              <Text style={styles.bulletDot}>{'\u2022'}</Text>
+              <Text style={styles.bulletText}>
+                For better accuracy, place a blank business card (or similar-sized reference card) beside the plate for scale.
+              </Text>
+            </View>
+            <View style={styles.bulletItem}>
+              <Text style={styles.bulletDot}>{'\u2022'}</Text>
+              <Text style={styles.bulletText}>
+                Use good lighting and keep the whole dish in view.
+              </Text>
+            </View>
+            <View style={styles.bulletItem}>
+              <Text style={styles.bulletDot}>{'\u2022'}</Text>
+              <Text style={styles.bulletText}>
+                If it looks good, tap Next. To retake, tap the back arrow.
+              </Text>
+            </View>
+          </View>
+        </View>
+      </ScrollView>
+
+      <BottomButtonContainer paddingHorizontal={10}>
+        <TouchableOpacity
+          style={styles.primaryButton}
+          onPress={handleNext}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.primaryButtonText}>Next</Text>
+        </TouchableOpacity>
+      </BottomButtonContainer>
+    </>
+  );
+
+  const renderStep2 = () => (
+    <>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 30 }]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={styles.stepBackButton}>
+          <VectorBackButtonCircle onPress={handleBack} size={32} />
+        </View>
+
+        <Text style={styles.questionText}>
+          Are any ingredients hidden or missing from the photo? For example: chicken under pasta, cheese inside, sauce mixed in.
+        </Text>
+
+        {renderRadioGroup(hiddenIngrYes, setHiddenIngrYes)}
+
+        {hiddenIngrYes && renderIngredientTable('hidden', hiddenIngredients, 'Ingredients')}
+      </ScrollView>
+
+      <BottomButtonContainer paddingHorizontal={10}>
+        <TouchableOpacity
+          style={styles.primaryButton}
+          onPress={handleNext}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.primaryButtonText}>Next</Text>
+        </TouchableOpacity>
+      </BottomButtonContainer>
+    </>
+  );
+
+  const renderStep3 = () => (
+    <>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 30 }]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={styles.stepBackButton}>
+          <VectorBackButtonCircle onPress={handleBack} size={32} />
+        </View>
+
+        <Text style={styles.questionText}>
+          Any extras or cooking styles that add calories? For example: extra cheese/oil/butter, double meat, fried, creamy sauce.
+        </Text>
+
+        {renderRadioGroup(extrasYes, setExtrasYes)}
+
+        {extrasYes && renderIngredientTable('extras', extras, 'Extra Ingredients')}
+      </ScrollView>
+
+      <BottomButtonContainer paddingHorizontal={10}>
+        <TouchableOpacity
+          style={styles.primaryButton}
+          onPress={handleNext}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.primaryButtonText}>Next</Text>
+        </TouchableOpacity>
+      </BottomButtonContainer>
+    </>
+  );
+
+  const renderStep4 = () => (
+    <>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={{ flex: 1 }}
         keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top : 0}
       >
         <TouchableWithoutFeedback onPress={() => Keyboard.dismiss()}>
-          <View style={{ flex: 1 }}>
-            <AppHeader
-              displayName={displayName}
-              lastLoginDate={lastLoginDate}
-              lastLoginTime={lastLoginTime}
-              onProfilePress={() => navigation.navigate('Profile' as never)}
-            />
+          <ScrollView
+            ref={scrollViewRef}
+            style={styles.scrollView}
+            contentContainerStyle={[styles.scrollContent, { paddingBottom: 30 }]}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+          >
+            <View style={styles.stepBackButton}>
+              <VectorBackButtonCircle onPress={handleBack} size={32} />
+            </View>
 
-            {/* Main Content - only this area scrolls */}
-            <ScrollView
-              ref={scrollViewRef}
-              style={styles.scrollView}
-              contentContainerStyle={[styles.scrollContent, { paddingBottom: 30 }]}
-              keyboardShouldPersistTaps="handled"
-              keyboardDismissMode="on-drag"
-              contentInsetAdjustmentBehavior="automatic"
-              showsVerticalScrollIndicator={false}
-              decelerationRate="normal"
-              bounces={true}
-              scrollEventThrottle={16}
-              overScrollMode="never"
-              nestedScrollEnabled={true}
-            >
-              {/* Preview with Dark Overlay */}
-              <View style={styles.previewContainer}>
-                {imageUri ? (
-                  <OptimizedImage 
-                    source={{ uri: imageUri }} 
-                    style={styles.previewMedia} 
-                    resizeMode="cover"
-                    cachePolicy="memory-disk"
-                    priority="high"
-                  />
-                ) : videoUri ? (
-                  <PreviewVideo uri={videoUri} style={styles.previewMedia} />
-                ) : null}
-                
-                {/* Dark Overlay */}
-                <View style={styles.darkOverlay} />
-                
-                {/* Back Button - Top Left */}
-                <View style={styles.backButtonContainer}>
-                  <View style={styles.backButtonBackground}>
-                    <VectorBackButtonCircle onPress={onBack} size={24} />
-                  </View>
-                </View>
-              </View>
+            <Text style={styles.questionText}>
+              If you know the recipe or menu description, add it here (Optional).
+            </Text>
 
-              {/* Text Input Field */}
-              <View style={styles.inputContainer}>
-                <TextInput
-                  ref={textInputRef}
-                  style={[styles.textInput, isTextInputFocused && styles.textInputFocused]}
-                  placeholder="You may provide additional details such as dish name, menu description, recipe, etc. (Optional)"
-                  value={textInput}
-                  onChangeText={setTextInput}
-                  multiline
-                  numberOfLines={3}
-                  textAlignVertical="top"
-                  placeholderTextColor="#999999"
-                  onFocus={() => {
-                    setIsTextInputFocused(true);
-                    setTimeout(() => {
-                      scrollViewRef.current?.scrollToEnd({ animated: true });
-                    }, 300);
-                  }}
-                  onBlur={() => setIsTextInputFocused(false)}
-                />
-              </View>
-            </ScrollView>
-          </View>
+            <View style={styles.descriptionInputContainer}>
+              <TextInput
+                ref={textInputRef}
+                style={[styles.descriptionInput, isTextInputFocused && styles.descriptionInputFocused]}
+                placeholder="For example, Spaghetti with chicken, creamy sauce, 2 tablespoon of oil, parmesan on top."
+                value={textInput}
+                onChangeText={setTextInput}
+                multiline
+                textAlignVertical="top"
+                placeholderTextColor="#999999"
+                onFocus={() => {
+                  setIsTextInputFocused(true);
+                  setTimeout(() => {
+                    scrollViewRef.current?.scrollToEnd({ animated: true });
+                  }, 300);
+                }}
+                onBlur={() => setIsTextInputFocused(false)}
+              />
+            </View>
+          </ScrollView>
         </TouchableWithoutFeedback>
-
       </KeyboardAvoidingView>
 
-      {/* Submit Button - Fixed at Bottom, outside KAV so it doesn't float above keyboard */}
       <BottomButtonContainer paddingHorizontal={10}>
         <TouchableOpacity
-          style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]}
+          style={[styles.primaryButton, isSubmitting && styles.primaryButtonDisabled]}
           onPress={handleSubmit}
           disabled={isSubmitting}
           activeOpacity={0.8}
         >
-          <Text style={styles.submitButtonText}>
+          <Text style={styles.primaryButtonText}>
             {isSubmitting ? 'Analyzing...' : 'Submit'}
           </Text>
         </TouchableOpacity>
       </BottomButtonContainer>
+    </>
+  );
+
+  return (
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <StatusBar barStyle="light-content" />
+      <AppHeader
+        displayName={displayName}
+        lastLoginDate={lastLoginDate}
+        lastLoginTime={lastLoginTime}
+        onProfilePress={() => navigation.navigate('Profile' as never)}
+      />
+      {step === 1 && renderStep1()}
+      {step === 2 && renderStep2()}
+      {step === 3 && renderStep3()}
+      {step === 4 && renderStep4()}
     </SafeAreaView>
   );
 }
@@ -576,29 +743,15 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 1,
-    paddingBottom: 20,
   },
-  content: {
-    flex: 1,
-    marginTop: 0,
-    marginLeft: 0,
-    marginRight: 0,
-    paddingTop: 0,
-    paddingLeft: 0,
-    paddingRight: 0,
-  },
+
+  // ── Step 1 ──
   previewContainer: {
     width: '100%',
     height: SCREEN_HEIGHT * 0.45,
     position: 'relative',
     backgroundColor: '#000000',
     overflow: 'hidden',
-    marginLeft: 0,
-    marginRight: 0,
-    marginTop: 0,
-    marginBottom: 0,
-    borderWidth: 0,
-    borderColor: 'transparent',
   },
   previewMedia: {
     width: '100%',
@@ -608,10 +761,6 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    margin: 0,
-    padding: 0,
-    borderWidth: 0,
-    borderColor: 'transparent',
   },
   darkOverlay: {
     position: 'absolute',
@@ -655,59 +804,186 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 4,
-    },
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 8,
   },
-  inputContainer: {
-    marginHorizontal: 10,
-    marginTop: 20,
-    marginBottom: 20,
-    minHeight: 150,
+  instructionContainer: {
+    paddingHorizontal: 20,
+    paddingTop: 24,
+    paddingBottom: 16,
   },
-  textInput: {
+  instructionTitle: {
+    fontSize: 15,
+    color: '#1F2937',
+    marginBottom: 10,
+  },
+  bulletList: {
+    gap: 8,
+  },
+  bulletItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  bulletDot: {
+    fontSize: 15,
+    color: '#1F2937',
+    marginRight: 8,
+    lineHeight: 22,
+  },
+  bulletText: {
+    flex: 1,
+    fontSize: 15,
+    color: '#1F2937',
+    lineHeight: 22,
+  },
+
+  // ── Steps 2–4 shared ──
+  stepBackButton: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 8,
+    alignSelf: 'flex-start',
+  },
+  questionText: {
+    fontSize: 16,
+    color: '#1F2937',
+    lineHeight: 24,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 20,
+  },
+  radioContainer: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    gap: 32,
+    marginBottom: 8,
+  },
+  radioOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  radioOuter: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: '#CCCCCC',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  radioOuterSelected: {
+    borderColor: '#7BA21B',
+  },
+  radioInner: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#7BA21B',
+  },
+  radioLabel: {
+    fontSize: 16,
+    color: '#1F2937',
+  },
+
+  // ── Ingredient table ──
+  ingredientSection: {
+    marginTop: 8,
+  },
+  tableDivider: {
+    height: 1,
+    backgroundColor: '#E5E7EB',
+    marginBottom: 16,
+  },
+  tableHeader: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    marginBottom: 12,
+  },
+  tableHeaderText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#1F2937',
+  },
+  tableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    marginBottom: 10,
+  },
+  tableInput: {
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: '#1F2937',
+    backgroundColor: '#FFFFFF',
+  },
+  addIngredientRow: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    alignItems: 'flex-end',
+  },
+  addIngredientButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#7BA21B',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 24,
+    gap: 6,
+  },
+  addIngredientText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+
+  // ── Step 4 ──
+  descriptionInputContainer: {
+    marginHorizontal: 20,
+    marginTop: 8,
+  },
+  descriptionInput: {
     borderWidth: 1,
     borderColor: '#E5E7EB',
     borderRadius: 12,
     padding: 16,
     fontSize: 14,
     color: '#1F2937',
-    minHeight: 150,
+    minHeight: 180,
     backgroundColor: '#FFFFFF',
     textAlignVertical: 'top',
   },
-  textInputFocused: {
+  descriptionInputFocused: {
     borderColor: '#7BA21B',
     borderWidth: 2,
   },
-  submitButton: {
-    height: 56, // Fixed height
-    width: '100%', // Fixed width
+
+  // ── Shared button ──
+  primaryButton: {
+    height: 56,
+    width: '100%',
     backgroundColor: '#7BA21B',
     borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
-    flexDirection: 'row',
     shadowColor: '#7BA21B',
-    shadowOffset: {
-      width: 0,
-      height: 4,
-    },
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 8,
   },
-  submitButtonDisabled: {
+  primaryButtonDisabled: {
     opacity: 0.7,
   },
-  submitButtonText: {
+  primaryButtonText: {
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '700',
   },
 });
-

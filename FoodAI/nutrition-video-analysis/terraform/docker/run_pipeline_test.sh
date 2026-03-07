@@ -1,0 +1,2 @@
+#!/bin/bash
+python3 /Users/rakshithmahishi/Documents/food-detection/FoodAI/nutrition-video-analysis/terraform/docker/test_pipeline_gemini.py /Users/rakshithmahishi/Documents/food-detection/FoodAI/nutrition-video-analysis/terraform/docker/food.jpg '{"hidden_ingredients":[{"name":"butter","quantity":"10g"}],"extras":[{"name":"olive oil","quantity":"1 tbsp"}],"recipe_description":"grilled chicken salad"}'

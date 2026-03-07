@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
-import { Alert, Animated, View, StyleSheet } from 'react-native';
+import { Alert, Animated, AppState, View, StyleSheet } from 'react-native';
 import { NavigationContainer, CommonActions } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
 // ActivityIndicator and Text moved to AppLoader component
@@ -17,8 +17,9 @@ import { store, persistor } from './store';
 import { useAppDispatch, useAppSelector } from './store/hooks';
 import { loadUserFromStorage } from './store/slices/authSlice';
 import { setShowSplash, setShowWelcome } from './store/slices/appSlice';
-import { loadHistory } from './store/slices/historySlice';
+import { loadHistory, updateAnalysis, updateAnalysisProgress } from './store/slices/historySlice';
 import { loadProfile } from './store/slices/profileSlice';
+import { nutritionAnalysisAPI } from './services/NutritionAnalysisAPI';
 import { userService } from './services/UserService';
 import { initSentry, setSentryUser, addBreadcrumb } from './utils/sentry';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -465,6 +466,8 @@ function AppContent() {
   const showSplash = useAppSelector((state) => state.app.showSplash);
   const showWelcome = useAppSelector((state) => state.app.showWelcome);
   const isAuthenticated = useAppSelector((state) => state.auth.isAuthenticated);
+  const user = useAppSelector((state) => state.auth.user);
+  const history = useAppSelector((state) => state.history.history);
 
   // Single NavigationContainer at the top level - never remounts
   // MUST be called before any conditional returns to maintain hook order
@@ -494,6 +497,109 @@ function AppContent() {
   useEffect(() => {
     console.log('[AppContent] showWelcome changed:', showWelcome, 'isAuthenticated:', isAuthenticated);
   }, [showWelcome, isAuthenticated]);
+
+  // When the app returns to the foreground, re-check any analyses that are still
+  // stuck at 'analyzing' — this handles the case where the app was killed while
+  // the backend was still processing.
+  const historyRef = useRef(history);
+  historyRef.current = history;
+  const userRef = useRef(user);
+  userRef.current = user;
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', async (nextState) => {
+      if (nextState !== 'active') return;
+
+      const pendingEntries = historyRef.current.filter(
+        (entry) => entry.analysisStatus === 'analyzing' && entry.job_id
+      );
+
+      if (pendingEntries.length === 0) return;
+
+      console.log(`[ResumeCheck] App became active — re-checking ${pendingEntries.length} pending job(s)`);
+
+      for (const entry of pendingEntries) {
+        const jobId = entry.job_id!;
+
+        // Re-read the latest entry from the ref — PreviewScreen polling may have already completed it
+        const currentEntry = historyRef.current.find((e) => e.id === entry.id);
+        if (!currentEntry || currentEntry.analysisStatus !== 'analyzing') {
+          console.log(`[ResumeCheck] Skipping job ${jobId} — already resolved by in-app polling`);
+          continue;
+        }
+
+        console.log(`[ResumeCheck] Checking job ${jobId} for analysis ${entry.id}...`);
+        try {
+          const status = await nutritionAnalysisAPI.checkStatus(jobId);
+          if (!status) {
+            console.warn(`[ResumeCheck] Could not reach backend for job ${jobId}`);
+            continue;
+          }
+
+          console.log(`[ResumeCheck] Job ${jobId} status: ${status.status}`);
+
+          if (status.status === 'completed') {
+            // Check once more that PreviewScreen hasn't resolved it while we were awaiting checkStatus
+            const stillPending = historyRef.current.find((e) => e.id === entry.id);
+            if (!stillPending || stillPending.analysisStatus !== 'analyzing') {
+              console.log(`[ResumeCheck] Skipping update — analysis ${entry.id} already resolved`);
+              continue;
+            }
+
+            const results = await nutritionAnalysisAPI.getResults(jobId, true);
+            if (!results) continue;
+
+            const items = results.items ?? [];
+            const summary = results.nutrition_summary;
+            const totalCalories = items.reduce(
+              (sum: number, item: any) => sum + (item.total_calories || 0), 0
+            ) || summary?.total_calories_kcal || 0;
+
+            const dishContents = items.length > 0
+              ? items.map((item: any, idx: number) => ({
+                  id: `${Date.now()}_${idx}`,
+                  name: item.food_name || 'Unknown Food',
+                  weight: item.mass_g ? Math.round(item.mass_g).toString() : '',
+                  calories: Math.round(item.total_calories || 0).toString(),
+                }))
+              : [{ id: `${Date.now()}_0`, name: 'No food detected', weight: '', calories: '0' }];
+
+            const mealName = items.length > 0 ? (items[0]?.food_name || 'Analyzed Meal') : 'No food detected';
+
+            if (userRef.current?.email) {
+              await dispatch(updateAnalysis({
+                userEmail: userRef.current.email,
+                analysisId: entry.id,
+                updates: {
+                  analysisStatus: 'completed',
+                  analysisProgress: 100,
+                  dishContents,
+                  mealName,
+                  nutritionalInfo: { calories: totalCalories, protein: 0, carbs: 0, fat: 0 },
+                  analysisResult: {
+                    summary: `Detected ${dishContents.length} food items with ${Math.round(totalCalories)} calories`,
+                    nutrition_summary: summary,
+                    job_id: jobId,
+                  } as any,
+                  job_id: jobId,
+                },
+              }));
+              console.log(`[ResumeCheck] ✅ Updated analysis ${entry.id} to completed`);
+            }
+          } else if (status.status === 'failed') {
+            dispatch(updateAnalysisProgress({ id: entry.id, progress: 0, status: 'failed' }));
+            console.log(`[ResumeCheck] ❌ Job ${jobId} failed`);
+          } else {
+            console.log(`[ResumeCheck] Job ${jobId} still in progress (${status.status})`);
+          }
+        } catch (err) {
+          console.warn(`[ResumeCheck] Error checking job ${jobId}:`, err);
+        }
+      }
+    });
+
+    return () => subscription.remove();
+  }, [dispatch]);
 
   const handleSplashFinish = useCallback(() => {
     Animated.timing(splashOpacity, {

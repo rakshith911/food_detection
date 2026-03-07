@@ -1,4 +1,7 @@
-  // Nutrition Video Analysis API Service
+import * as Notifications from 'expo-notifications';
+import { Platform } from 'react-native';
+
+// Nutrition Video Analysis API Service
 // Integrates with the AWS-deployed nutrition analysis backend
 // Override with EXPO_PUBLIC_NUTRITION_API_URL to point at local/different backend (e.g. http://10.0.2.2:8000 for Android emulator)
 
@@ -53,9 +56,62 @@ export interface UploadResponse {
 
 export class NutritionAnalysisAPI {
   private baseUrl: string;
+  private pushToken: string | null = null;
 
   constructor(baseUrl: string = API_BASE_URL) {
     this.baseUrl = baseUrl;
+  }
+
+  /**
+   * Get Expo push token for server-side completion notifications.
+   * Returns null when unavailable (simulator/permissions denied/etc).
+   */
+  private async getPushToken(): Promise<string | null> {
+    try {
+      if (this.pushToken) {
+        console.log('[PushNotif] Using cached push token:', this.pushToken.slice(-12));
+        return this.pushToken;
+      }
+
+      console.log('[PushNotif] Checking notification permissions...');
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      console.log('[PushNotif] Existing permission status:', existingStatus);
+      let status = existingStatus;
+      if (status !== 'granted') {
+        console.log('[PushNotif] Requesting notification permissions...');
+        const req = await Notifications.requestPermissionsAsync();
+        status = req.status;
+        console.log('[PushNotif] Permission request result:', status);
+      }
+      if (status !== 'granted') {
+        console.warn('[PushNotif] Permission not granted — push notifications disabled');
+        return null;
+      }
+
+      if (Platform.OS === 'android') {
+        console.log('[PushNotif] Setting up Android notification channel...');
+        await Notifications.setNotificationChannelAsync('default', {
+          name: 'default',
+          importance: Notifications.AndroidImportance.DEFAULT,
+        });
+      }
+
+      console.log('[PushNotif] Fetching Expo push token (projectId: 816a41f0)...');
+      const tokenResponse = await Notifications.getExpoPushTokenAsync({
+        projectId: '816a41f0-67d2-4dd1-b982-c10c51e6dd37',
+      });
+
+      this.pushToken = tokenResponse.data || null;
+      if (this.pushToken) {
+        console.log('[PushNotif] ✅ Push token acquired:', this.pushToken.slice(-12));
+      } else {
+        console.warn('[PushNotif] ⚠️ getExpoPushTokenAsync returned empty data');
+      }
+      return this.pushToken;
+    } catch (error) {
+      console.warn('[PushNotif] ❌ Push token unavailable:', error);
+      return null;
+    }
   }
 
   /**
@@ -80,8 +136,10 @@ export class NutritionAnalysisAPI {
    */
   async requestUploadUrl(filename: string, contentType: string = 'video/mp4'): Promise<UploadResponse | null> {
     try {
+      const pushToken = await this.getPushToken();
+      console.log('[PushNotif] requestUploadUrl — push token present:', !!pushToken);
       console.log('[Nutrition API] Requesting upload URL from:', `${this.baseUrl}/api/upload`);
-      console.log('[Nutrition API] Request body:', { type: 'presigned', filename, content_type: contentType });
+      console.log('[Nutrition API] Request body:', { type: 'presigned', filename, content_type: contentType, has_push_token: !!pushToken });
       
       const response = await fetch(`${this.baseUrl}/api/upload`, {
         method: 'POST',
@@ -92,6 +150,7 @@ export class NutritionAnalysisAPI {
           type: 'presigned',
           filename,
           content_type: contentType,
+          push_token: pushToken || undefined,
         }),
       });
 
@@ -149,8 +208,10 @@ export class NutritionAnalysisAPI {
   /**
    * Confirm upload and start processing
    */
-  async confirmUpload(jobId: string): Promise<boolean> {
+  async confirmUpload(jobId: string, userContext?: Record<string, any>): Promise<boolean> {
     try {
+      const pushToken = await this.getPushToken();
+      console.log('[PushNotif] confirmUpload — push token present:', !!pushToken);
       const response = await fetch(`${this.baseUrl}/api/upload`, {
         method: 'POST',
         headers: {
@@ -159,6 +220,8 @@ export class NutritionAnalysisAPI {
         body: JSON.stringify({
           type: 'confirm',
           job_id: jobId,
+          push_token: pushToken || undefined,
+          user_context: userContext && Object.keys(userContext).length > 0 ? userContext : undefined,
         }),
       });
 
@@ -431,7 +494,9 @@ export class NutritionAnalysisAPI {
   async analyzeVideo(
     videoUri: string,
     filename: string,
-    onProgress?: (status: string) => void
+    onProgress?: (status: string) => void,
+    onJobCreated?: (jobId: string) => void,
+    userContext?: Record<string, any>
   ): Promise<NutritionAnalysisResult | null> {
     try {
       // Step 1: Request upload URL
@@ -441,6 +506,10 @@ export class NutritionAnalysisAPI {
         throw new Error('Failed to get upload URL');
       }
 
+      // Notify caller of job_id immediately so it can be persisted before any further async work
+      console.log('[Nutrition API] Job created, notifying caller with job_id:', uploadData.job_id);
+      onJobCreated?.(uploadData.job_id);
+
       // Step 2: Upload video
       onProgress?.('Uploading video...');
       const uploaded = await this.uploadVideo(uploadData.upload_url, videoUri);
@@ -448,18 +517,23 @@ export class NutritionAnalysisAPI {
         throw new Error('Failed to upload video');
       }
 
-      // Step 3: Confirm upload to start processing
+      // Step 3: Confirm upload to start processing (pass user context so it reaches Gemini)
       onProgress?.('Starting analysis...');
-      const confirmed = await this.confirmUpload(uploadData.job_id);
+      const confirmed = await this.confirmUpload(uploadData.job_id, userContext);
       if (!confirmed) {
         throw new Error('Failed to confirm upload');
       }
 
       // Step 4: Poll for results (always request detailed to get segmented images)
+      // 6 attempts × 5s = 30 seconds before timeout
       onProgress?.('Processing video...');
-      return await this.pollForResults(uploadData.job_id, onProgress, 60, 5000, true);
-    } catch (error) {
-      console.error('[Nutrition API] Video analysis failed:', error);
+      return await this.pollForResults(uploadData.job_id, onProgress, 6, 5000, true);
+    } catch (error: any) {
+      console.warn('[Nutrition API] Video analysis failed:', error?.message);
+      if (error?.message === 'Analysis timeout') {
+        console.log('[Nutrition API] Video timed out — job is still queued in SQS, re-throwing for caller');
+        throw error;
+      }
       return null;
     }
   }
@@ -470,7 +544,9 @@ export class NutritionAnalysisAPI {
   async analyzeImage(
     imageUri: string,
     filename: string,
-    onProgress?: (status: string) => void
+    onProgress?: (status: string) => void,
+    onJobCreated?: (jobId: string) => void,
+    userContext?: Record<string, any>
   ): Promise<NutritionAnalysisResult | null> {
     try {
       // Step 1: Request upload URL with image content type
@@ -481,6 +557,10 @@ export class NutritionAnalysisAPI {
         throw new Error('Failed to get upload URL');
       }
 
+      // Notify caller of job_id immediately so it can be persisted before any further async work
+      console.log('[Nutrition API] Job created, notifying caller with job_id:', uploadData.job_id);
+      onJobCreated?.(uploadData.job_id);
+
       // Step 2: Upload image with matching content type
       onProgress?.('Uploading image...');
       const uploaded = await this.uploadImage(uploadData.upload_url, imageUri, contentType);
@@ -488,18 +568,23 @@ export class NutritionAnalysisAPI {
         throw new Error('Failed to upload image');
       }
 
-      // Step 3: Confirm upload to start processing
+      // Step 3: Confirm upload to start processing (pass user context so it reaches Gemini)
       onProgress?.('Starting analysis...');
-      const confirmed = await this.confirmUpload(uploadData.job_id);
+      const confirmed = await this.confirmUpload(uploadData.job_id, userContext);
       if (!confirmed) {
         throw new Error('Failed to confirm upload');
       }
 
       // Step 4: Poll for results (always request detailed to get segmented images)
+      // 6 attempts × 5s = 30 seconds before timeout
       onProgress?.('Processing image...');
-      return await this.pollForResults(uploadData.job_id, onProgress, 60, 5000, true);
-    } catch (error) {
-      console.error('[Nutrition API] Image analysis failed:', error);
+      return await this.pollForResults(uploadData.job_id, onProgress, 6, 5000, true);
+    } catch (error: any) {
+      console.warn('[Nutrition API] Image analysis failed:', error?.message);
+      if (error?.message === 'Analysis timeout') {
+        console.log('[Nutrition API] Image timed out — job is still queued in SQS, re-throwing for caller');
+        throw error;
+      }
       return null;
     }
   }

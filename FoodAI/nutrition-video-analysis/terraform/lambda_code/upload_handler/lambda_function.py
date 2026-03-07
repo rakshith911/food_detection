@@ -47,6 +47,11 @@ def lambda_handler(event, context):
         request_type = body.get('type', 'presigned')
         filename = body.get('filename', f'{job_id}.mp4')
         content_type = body.get('content_type', 'video/mp4')
+        push_token = body.get('push_token')
+        user_context = body.get('user_context')  # questionnaire data from frontend
+        print(f'[PushNotif] request_type={request_type} — push token present in request: {bool(push_token)}')
+        if user_context:
+            print(f'[upload_handler] user_context received: {json.dumps(user_context)}')
 
         # S3 key for video
         s3_key = f'uploads/{job_id}/{filename}'
@@ -66,6 +71,7 @@ def lambda_handler(event, context):
             )
 
             # Create job record in DynamoDB
+            print(f'[PushNotif] Saving push token to DynamoDB for job {job_id}: {bool(push_token)}')
             table = dynamodb.Table(DYNAMODB_JOBS_TABLE)
             table.put_item(Item={
                 'job_id': job_id,
@@ -73,7 +79,8 @@ def lambda_handler(event, context):
                 'created_at': timestamp,
                 'updated_at': timestamp,
                 's3_key': s3_key,
-                'filename': filename
+                'filename': filename,
+                'push_token': push_token
             })
 
             return {
@@ -114,7 +121,8 @@ def lambda_handler(event, context):
                 'created_at': timestamp,
                 'updated_at': timestamp,
                 's3_key': s3_key,
-                'filename': filename
+                'filename': filename,
+                'push_token': push_token
             })
 
             # Queue for processing
@@ -123,7 +131,8 @@ def lambda_handler(event, context):
                 MessageBody=json.dumps({
                     'job_id': job_id,
                     's3_bucket': S3_VIDEOS_BUCKET,
-                    's3_key': s3_key
+                    's3_key': s3_key,
+                    'push_token': push_token
                 })
             )
 
@@ -160,6 +169,25 @@ def lambda_handler(event, context):
 
             job = response['Item']
 
+            # Update push token and user_context if provided by client
+            update_expr = 'SET updated_at = :updated_at'
+            update_vals = {':updated_at': datetime.utcnow().isoformat() + 'Z'}
+            update_names = {}
+            if push_token:
+                update_expr += ', push_token = :push_token'
+                update_vals[':push_token'] = push_token
+                job['push_token'] = push_token
+            if user_context:
+                update_expr += ', user_context = :user_context'
+                update_vals[':user_context'] = json.dumps(user_context)
+                job['user_context'] = user_context
+            table.update_item(
+                Key={'job_id': confirm_job_id},
+                UpdateExpression=update_expr,
+                ExpressionAttributeValues=update_vals,
+                **(({'ExpressionAttributeNames': update_names}) if update_names else {})
+            )
+
             # Update status and queue for processing
             table.update_item(
                 Key={'job_id': confirm_job_id},
@@ -171,14 +199,21 @@ def lambda_handler(event, context):
                 }
             )
 
-            # Queue for processing
+            # Queue for processing — include user_context so the worker/Gemini can use it
+            token_for_sqs = job.get('push_token')
+            ctx_for_sqs = job.get('user_context')
+            print(f'[PushNotif] Queuing job {confirm_job_id} to SQS — push token present: {bool(token_for_sqs)}')
+            sqs_body = {
+                'job_id': confirm_job_id,
+                's3_bucket': S3_VIDEOS_BUCKET,
+                's3_key': job['s3_key'],
+                'push_token': token_for_sqs,
+            }
+            if ctx_for_sqs:
+                sqs_body['user_context'] = ctx_for_sqs
             sqs.send_message(
                 QueueUrl=SQS_VIDEO_QUEUE_URL,
-                MessageBody=json.dumps({
-                    'job_id': confirm_job_id,
-                    's3_bucket': S3_VIDEOS_BUCKET,
-                    's3_key': job['s3_key']
-                })
+                MessageBody=json.dumps(sqs_body)
             )
 
             return {
@@ -260,6 +295,23 @@ def lambda_handler(event, context):
 
             job = response['Item']
 
+            # Update push token and user_context if provided by client
+            cg_update_expr = 'SET updated_at = :updated_at'
+            cg_update_vals = {':updated_at': datetime.utcnow().isoformat() + 'Z'}
+            if push_token:
+                cg_update_expr += ', push_token = :push_token'
+                cg_update_vals[':push_token'] = push_token
+                job['push_token'] = push_token
+            if user_context:
+                cg_update_expr += ', user_context = :user_context'
+                cg_update_vals[':user_context'] = json.dumps(user_context)
+                job['user_context'] = user_context
+            table.update_item(
+                Key={'job_id': confirm_job_id},
+                UpdateExpression=cg_update_expr,
+                ExpressionAttributeValues=cg_update_vals,
+            )
+
             # Mark as queued
             table.update_item(
                 Key={'job_id': confirm_job_id},
@@ -273,11 +325,17 @@ def lambda_handler(event, context):
 
             # Invoke gemini_processor Lambda asynchronously (fire-and-forget)
             # The Lambda updates DynamoDB when done; frontend polls /api/status/{job_id}
+            token_for_lambda = job.get('push_token')
+            ctx_for_lambda = job.get('user_context')
+            print(f'[PushNotif] Invoking gemini_processor for job {confirm_job_id} — push token present: {bool(token_for_lambda)}')
             payload = {
                 'job_id':    confirm_job_id,
                 's3_bucket': S3_VIDEOS_BUCKET,
                 's3_key':    job['s3_key'],
+                'push_token': token_for_lambda,
             }
+            if ctx_for_lambda:
+                payload['user_context'] = ctx_for_lambda
             lambda_client.invoke(
                 FunctionName=GEMINI_PROCESSOR_LAMBDA,
                 InvocationType='Event',  # async — returns immediately

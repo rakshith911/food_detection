@@ -68,7 +68,49 @@ class NutritionVideoPipeline:
             # Store Florence-2 detection results for debugging
             self.florence_detections = []
     
-    def process_image(self, image_path: Path, job_id: str) -> Dict:
+    @staticmethod
+    def _build_user_context_suffix(user_context: dict) -> str:
+        """Build a prompt suffix from the user's questionnaire answers."""
+        if not user_context:
+            return ""
+        lines = []
+        hidden = user_context.get('hidden_ingredients', [])
+        if hidden:
+            items = ', '.join(
+                f"{i['name']} ({i['quantity']})" if i.get('quantity') else i['name']
+                for i in hidden if i.get('name')
+            )
+            if items:
+                lines.append(
+                    f"- Ingredients present but not fully visible in the image: {items}. "
+                    "Include each of these in visible_ingredients and estimate their weights and calories."
+                )
+        extras = user_context.get('extras', [])
+        if extras:
+            items = ', '.join(
+                f"{i['name']} ({i['quantity']})" if i.get('quantity') else i['name']
+                for i in extras if i.get('name')
+            )
+            if items:
+                lines.append(
+                    f"- Extras or cooking additions that add calories: {items}. "
+                    "Include these in your analysis and factor them into the calorie totals."
+                )
+        recipe = user_context.get('recipe_description', '').strip()
+        if recipe:
+            lines.append(
+                f"- Recipe/menu description from user: \"{recipe}\". "
+                "Use this to improve accuracy of food identification and portion estimates."
+            )
+        if not lines:
+            return ""
+        return (
+            "\n\nADDITIONAL CONTEXT PROVIDED BY THE USER (treat as high-confidence information):\n"
+            + "\n".join(lines)
+            + "\n"
+        )
+
+    def process_image(self, image_path: Path, job_id: str, user_context: dict = None) -> Dict:
         """
         Process a single image (same pipeline as video, but with 1 frame)
 
@@ -101,7 +143,7 @@ class NutritionVideoPipeline:
             logger.info(f"[{job_id}] Loaded image as single frame")
 
             # Step 2: Run tracking pipeline with depth
-            tracking_results = self._run_tracking_pipeline(frames, job_id)
+            tracking_results = self._run_tracking_pipeline(frames, job_id, user_context=user_context)
 
             # Step 3: Analyze nutrition
             print("🍎 Analyzing nutrition...")
@@ -132,7 +174,7 @@ class NutritionVideoPipeline:
             logger.error(f"[{job_id}] Image processing failed: {e}", exc_info=True)
             raise
 
-    def process_video(self, video_path: Path, job_id: str) -> Dict:
+    def process_video(self, video_path: Path, job_id: str, user_context: dict = None) -> Dict:
         """
         Main entry point - process entire video
 
@@ -154,7 +196,7 @@ class NutritionVideoPipeline:
             logger.info(f"[{job_id}] Loaded {len(frames)} frames")
 
             # Step 2: Run tracking pipeline with depth (pass video_path for one-shot Gemini video)
-            tracking_results = self._run_tracking_pipeline(frames, job_id, video_path=video_path)
+            tracking_results = self._run_tracking_pipeline(frames, job_id, video_path=video_path, user_context=user_context)
 
             # Step 3: Analyze nutrition
             nutrition_results = self._analyze_nutrition(tracking_results, job_id)
@@ -262,7 +304,7 @@ class NutritionVideoPipeline:
         cap.release()
         return frames
     
-    def _run_tracking_pipeline(self, frames: List[np.ndarray], job_id: str, video_path: Optional[Path] = None) -> Dict:
+    def _run_tracking_pipeline(self, frames: List[np.ndarray], job_id: str, video_path: Optional[Path] = None, user_context: dict = None) -> Dict:
         """
         Run complete tracking pipeline with depth estimation.
         When video_path is set and USE_GEMINI_VIDEO_DETECTION, runs one Gemini video call for the whole clip.
@@ -294,11 +336,11 @@ class NutritionVideoPipeline:
             if use_multi_image_video:
                 print("🎬 Gemini multi-image (5 frames, no duplicates) for whole clip...")
                 sys.stdout.flush()
-                initial_video_detections = self._detect_objects_gemini_multi_image(frames, job_id)
+                initial_video_detections = self._detect_objects_gemini_multi_image(frames, job_id, user_context=user_context)
             else:
                 print("🎬 One-shot Gemini video detection for whole clip (no frame-wise detection)...")
                 sys.stdout.flush()
-                initial_video_detections = self._detect_objects_gemini_video(video_path, job_id)
+                initial_video_detections = self._detect_objects_gemini_video(video_path, job_id, user_context=user_context)
             if initial_video_detections is not None:
                 use_video_detection = True
                 logger.info(f"[{job_id}] Using Gemini video detections for frame 0 only (one-shot only)")
@@ -412,7 +454,7 @@ class NutritionVideoPipeline:
                         sys.stdout.flush()
                         try:
                             if self.config.USE_GEMINI_DETECTION:
-                                gemini_out = self._detect_objects_gemini(frame_pil, job_id)
+                                gemini_out = self._detect_objects_gemini(frame_pil, job_id, user_context=user_context)
                                 boxes = gemini_out[0]
                                 labels = gemini_out[1]
                                 detected_caption = gemini_out[2]
@@ -960,7 +1002,7 @@ class NutritionVideoPipeline:
         
         return result
     
-    def _detect_objects_gemini(self, image_pil, job_id: str):
+    def _detect_objects_gemini(self, image_pil, job_id: str, user_context: dict = None):
         """
         Detect food objects using Gemini image understanding (same structure as gemini/test_gemini_analysis).
         Returns (boxes, labels, caption, unquantified_ingredients) for pipeline compatibility.
@@ -995,6 +1037,7 @@ class NutritionVideoPipeline:
             "Example: [{\"name\": \"fish fillet\", \"bounding_box\": [100,50,300,250], \"estimated_quantity_grams\": 95, \"quantity\": 1, \"estimated_total_kcal\": 120}, {\"name\": \"almonds\", \"bounding_box\": [50,400,280,520], \"estimated_quantity_grams\": 15, \"quantity\": 15, \"estimated_total_kcal\": 90}]. "
             "Output only valid JSON (you may wrap in ```json)."
         )
+        prompt += self._build_user_context_suffix(user_context)
         # Try multiple models (404 if model name not available in this API version)
         gemini_models_try = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-exp", "gemini-pro-vision"]
         response_text = ""
@@ -1071,12 +1114,85 @@ class NutritionVideoPipeline:
         caption = data.get("main_food_item") or ""
         if data.get("additional_notes"):
             caption = f"{caption}. {data['additional_notes']}" if caption else data["additional_notes"]
+
+        # Inject hidden_ingredients and extras from user_context as ground-truth items.
+        # These are not visually detectable so Gemini won't include them — we force-add them.
+        if user_context:
+            def _parse_grams_from_str(qty: str):
+                import re as _re
+                if not qty:
+                    return None
+                qty = qty.strip().lower()
+                m = _re.match(r'(\d+(?:\.\d+)?)\s*g(?:rams?)?', qty)
+                if m:
+                    return float(m.group(1))
+                m = _re.match(r'(\d+(?:\.\d+)?)\s*ml', qty)
+                if m:
+                    return float(m.group(1))
+                m = _re.match(r'(\d+(?:\.\d+)?)\s*tbsp', qty)
+                if m:
+                    return float(m.group(1)) * 14.0
+                m = _re.match(r'(\d+(?:\.\d+)?)\s*tsp', qty)
+                if m:
+                    return float(m.group(1)) * 5.0
+                return None
+
+            # Collect all items to inject
+            items_to_inject = []
+            for item in user_context.get('hidden_ingredients', []):
+                name = (item.get('name') or '').strip()
+                if name:
+                    items_to_inject.append({'name': name, 'quantity': item.get('quantity', ''), 'type': 'hidden'})
+            for item in user_context.get('extras', []):
+                name = (item.get('name') or '').strip()
+                if name:
+                    items_to_inject.append({'name': name, 'quantity': item.get('quantity', ''), 'type': 'extra'})
+
+            # Ask Gemini to estimate calories for all injected items in one call
+            gemini_kcal_map = {}
+            if items_to_inject and self.config.GEMINI_API_KEY:
+                try:
+                    items_desc = ', '.join(
+                        f"{i['name']} ({i['quantity']})" if i.get('quantity') else i['name']
+                        for i in items_to_inject
+                    )
+                    cal_prompt = (
+                        f"Estimate the calories for each of these food items at the given quantities: {items_desc}. "
+                        "Return ONLY a JSON array like: [{\"name\": \"butter\", \"kcal\": 72}, ...]. No extra text."
+                    )
+                    cal_response = genai.GenerativeModel("gemini-2.5-flash").generate_content(cal_prompt)
+                    cal_text = (cal_response.text or "").strip()
+                    if "```" in cal_text:
+                        cal_text = cal_text.split("```")[1]
+                        if cal_text.startswith("json"):
+                            cal_text = cal_text[4:]
+                    cal_data = json.loads(cal_text.strip())
+                    for entry in cal_data:
+                        n = (entry.get('name') or '').strip().lower()
+                        k = entry.get('kcal')
+                        if n and k is not None:
+                            gemini_kcal_map[n] = float(k)
+                    logger.info(f"[Gemini detection] Calorie estimates for injected items: {gemini_kcal_map}")
+                except Exception as e:
+                    logger.warning(f"[Gemini detection] Could not estimate calories for injected items: {e}")
+
+            for item in items_to_inject:
+                name = item['name']
+                g = _parse_grams_from_str(item.get('quantity', ''))
+                kcal = gemini_kcal_map.get(name.lower())
+                boxes.append([0.0, 0.0, 1.0, 1.0])  # placeholder bbox
+                labels.append(name)
+                grams_list.append(g)
+                quantity_list.append(1)
+                calories_list.append(kcal)
+                logger.info(f"[Gemini detection] Injected {item['type']}: {name} ({g}g, {kcal} kcal)")
+
         boxes = np.array(boxes, dtype=np.float32) if boxes else np.array([])
         print(f"  ✓ Gemini detection: {len(labels)} objects")
         sys.stdout.flush()
         return boxes, labels, caption, [], grams_list, quantity_list, calories_list
     
-    def _detect_objects_gemini_multi_image(self, frames_list: List[np.ndarray], job_id: str):
+    def _detect_objects_gemini_multi_image(self, frames_list: List[np.ndarray], job_id: str, user_context: dict = None):
         """
         Detect food objects using Gemini with multiple images (5 frames) in one prompt.
         Same prompt logic as single image; additionally instructs: do not count duplicates
@@ -1117,6 +1233,7 @@ class NutritionVideoPipeline:
             "Example: [{\"name\": \"fish fillet\", \"bounding_box\": [100,50,300,250], \"estimated_quantity_grams\": 95, \"quantity\": 1}, {\"name\": \"almonds\", \"bounding_box\": [50,400,280,520], \"estimated_quantity_grams\": 15, \"quantity\": 15}]. "
             "Output only valid JSON (you may wrap in ```json)."
         )
+        prompt += self._build_user_context_suffix(user_context)
         try:
             from google import genai as genai_new
             from google.genai import types
@@ -1222,7 +1339,7 @@ class NutritionVideoPipeline:
     _GEMINI_VIDEO_REF_H = 720
     _GEMINI_VIDEO_INLINE_LIMIT = 20 * 1024 * 1024  # 20 MB
     
-    def _detect_objects_gemini_video(self, video_path: Path, job_id: str):
+    def _detect_objects_gemini_video(self, video_path: Path, job_id: str, user_context: dict = None):
         """
         One-shot Gemini video understanding: call Gemini video API once for the whole clip.
         Returns (boxes, labels, caption) with boxes in reference resolution 1280x720
@@ -1249,6 +1366,7 @@ class NutritionVideoPipeline:
             "Example: [{\"name\": \"fish fillet\", \"bounding_box\": [320,200,600,500], \"estimated_quantity_grams\": 100, \"quantity\": 1, \"timestamp_seconds\": 0}, {\"name\": \"Kiwi Slices\", \"bounding_box\": [100,400,400,600], \"estimated_quantity_grams\": 120, \"quantity\": 6}].\n"
             "Output only valid JSON (you may wrap in ```json)."
         )
+        prompt += self._build_user_context_suffix(user_context)
         try:
             try:
                 from google import genai as genai_new

@@ -43,9 +43,12 @@ import sys
 import time
 import tempfile
 import traceback
+import urllib.request
+import urllib.error
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Optional
 
 import boto3
 
@@ -126,6 +129,40 @@ def upload_results(job_id: str, results: dict):
     return results_key
 
 
+def send_expo_push_notification(push_token: str, title: str, body: str, data: Optional[dict] = None):
+    """Send push notification via Expo Push API."""
+    if not push_token:
+        print("[PushNotif] ⚠️ No push token — skipping notification")
+        return
+    print(f"[PushNotif] Sending push notification to token ending ...{push_token[-12:]}")
+    print(f"[PushNotif]   title: {title}")
+    print(f"[PushNotif]   body:  {body}")
+    payload = {
+        "to": push_token,
+        "title": title,
+        "body": body,
+        "sound": "default",
+        "data": data or {},
+    }
+    req = urllib.request.Request(
+        "https://exp.host/--/api/v2/push/send",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            response_body = resp.read().decode("utf-8")
+            print(f"[PushNotif] ✅ Push sent. Expo response: {response_body[:300]}")
+    except urllib.error.HTTPError as e:
+        print(f"[PushNotif] ❌ Push send failed (HTTP {e.code}): {e.read().decode('utf-8')[:300]}")
+    except Exception as e:
+        print(f"[PushNotif] ❌ Push send failed: {e}")
+
+
 def is_image_file(filename: str) -> bool:
     """Check if file is an image based on extension."""
     image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff', '.tif'}
@@ -138,7 +175,7 @@ def is_video_file(filename: str) -> bool:
     return Path(filename).suffix.lower() in video_extensions
 
 
-def process_media(media_path: str, job_id: str) -> dict:
+def process_media(media_path: str, job_id: str, user_context: dict = None) -> dict:
     """
     Process media file (image or video) through the nutrition analysis pipeline.
 
@@ -189,10 +226,10 @@ def process_media(media_path: str, job_id: str) -> dict:
 
         if is_image_file(media_path):
             print(f"Processing image: {media_path}")
-            results = pipeline.process_image(media_path_obj, job_id)
+            results = pipeline.process_image(media_path_obj, job_id, user_context=user_context)
         elif is_video_file(media_path):
             print(f"Processing video: {media_path}")
-            results = pipeline.process_video(media_path_obj, job_id)
+            results = pipeline.process_video(media_path_obj, job_id, user_context=user_context)
         else:
             raise ValueError(f"Unsupported file type: {media_path_obj.suffix}")
 
@@ -405,6 +442,19 @@ def process_message(message: dict):
     job_id = body['job_id']
     s3_bucket = body['s3_bucket']
     s3_key = body['s3_key']
+    push_token = body.get('push_token')
+    raw_ctx = body.get('user_context')
+    if isinstance(raw_ctx, str):
+        try:
+            user_context = json.loads(raw_ctx)
+        except (json.JSONDecodeError, TypeError):
+            user_context = {}
+    elif isinstance(raw_ctx, dict):
+        user_context = raw_ctx
+    else:
+        user_context = {}
+    print(f"[PushNotif] Job {job_id} — push token present in SQS message: {bool(push_token)}")
+    print(f"[worker] user_context keys: {list(user_context.keys()) if user_context else 'none'}")
 
     print(f"\n{'='*60}")
     print(f"Processing job: {job_id}")
@@ -429,8 +479,8 @@ def process_message(message: dict):
 
             update_job_status(job_id, 'processing', progress=5)
 
-            # Process media (image or video)
-            results = process_media(media_path, job_id)
+            # Process media (image or video) — pass user_context so Gemini prompts are enriched
+            results = process_media(media_path, job_id, user_context=user_context)
 
             # Upload results
             results_key = upload_results(job_id, results)
@@ -454,6 +504,17 @@ def process_message(message: dict):
                 nutrition_summary=results.get('meal_summary', {}),
                 detected_foods=food_items
             )
+
+            # Send completion push notification (works even when app is closed)
+            if push_token:
+                meal_summary = results.get('meal_summary', {}) or {}
+                kcal = meal_summary.get('total_calories_kcal') or 0
+                send_expo_push_notification(
+                    push_token=push_token,
+                    title="UKcal Analysis Complete",
+                    body=f"Your analysis is ready ({int(kcal)} kcal).",
+                    data={"job_id": job_id, "status": "completed"},
+                )
 
             print(f"\n{'='*60}")
             print(f"Job {job_id} completed successfully!")

@@ -93,33 +93,35 @@ worker.upload_results = mock_upload_results
 # Skip S3 model downloads - we're running locally with local checkpoints
 worker.download_models_from_s3 = lambda: print("⏭️  Skipping S3 model downloads (running locally)")
 
-def test_worker_with_image(image_path: str):
+def test_worker_with_image(image_path: str, user_context: dict = None):
     """Test worker.py with a local image file"""
-    
+
     if not os.path.exists(image_path):
         print(f"❌ Error: Image file not found: {image_path}")
         return None
-    
+
     print(f"\n{'='*60}")
     print(f"🧪 Testing worker.py with image: {image_path}")
     print(f"{'='*60}\n")
-    
+
     # Generate a test job ID
     import uuid
     job_id = f"test-{uuid.uuid4().hex[:8]}"
-    
+
     print(f"📝 Job ID: {job_id}")
     print(f"🖼️  Image: {image_path}")
     print(f"💻 Device: {os.environ.get('DEVICE', 'cpu')}")
+    if user_context:
+        print(f"📋 user_context: {json.dumps(user_context, indent=2)}")
     print()
-    
+
     try:
         # Call the process_media function directly
         print("🚀 Starting processing...")
         print("   (This may take a few minutes as models load...)")
         print()
-        
-        results = worker.process_media(image_path, job_id)
+
+        results = worker.process_media(image_path, job_id, user_context=user_context)
         
         print(f"\n{'='*60}")
         print("✅ Processing completed successfully!")
@@ -167,13 +169,25 @@ if __name__ == '__main__':
     if len(sys.argv) < 2:
         print("❌ Error: No image path provided")
         print("\nUsage:")
-        print(f"  python {sys.argv[0]} <path_to_image>")
+        print(f"  python {sys.argv[0]} <path_to_image> [user_context_json]")
+        print("\nExample with user_context:")
+        print(f"  python {sys.argv[0]} /app/food.jpg '{{\"hidden_ingredients\":[{{\"name\":\"butter\",\"quantity\":\"10g\"}}],\"extras\":[{{\"name\":\"olive oil\",\"quantity\":\"1 tbsp\"}}],\"recipe_description\":\"grilled chicken salad\"}}'")
         sys.exit(1)
-    
+
     image_path = sys.argv[1]
-    
+
+    # Optional user_context as second argument (JSON string)
+    user_context = None
+    if len(sys.argv) >= 3:
+        try:
+            user_context = json.loads(sys.argv[2])
+            print(f"📋 Parsed user_context from args: {json.dumps(user_context, indent=2)}")
+        except json.JSONDecodeError as e:
+            print(f"❌ Error: Could not parse user_context JSON: {e}")
+            sys.exit(1)
+
     # Run the test
-    results = test_worker_with_image(image_path)
+    results = test_worker_with_image(image_path, user_context=user_context)
     
     if results:
         print("\n✅ Test completed successfully!")
