@@ -395,18 +395,20 @@ export default function FeedbackScreen() {
             </>
           ) : (
             (() => {
-              const showImageLoader = !isVideo && !!item.imageUri;
-              const displayUri = item.imageUri || null;
-              if (item.imageUri) {
+              const overlayUri = effectiveSegmentedImages?.overlay_urls?.[0]?.url;
+              const displayUri = (!overlayLoadFailed && overlayUri) ? overlayUri : item.imageUri || null;
+              const showImageLoader = !isVideo && !!displayUri;
+              if (displayUri) {
                 return (
                   <TouchableOpacity activeOpacity={1} onPress={() => { setFullImageUri(displayUri); setShowFullImageModal(true); }} style={styles.mediaTouchable}>
                     <OptimizedImage
-                      source={{ uri: item.imageUri }}
+                      source={{ uri: displayUri }}
                       style={styles.media}
                       resizeMode="cover"
                       cachePolicy="memory-disk"
                       priority="normal"
                       onImageLoad={() => setMediaLoading(false)}
+                      onError={() => { setMediaLoading(false); setOverlayLoadFailed(true); }}
                     />
                     {showImageLoader && mediaLoading && (
                       <View style={[StyleSheet.absoluteFill, styles.mediaLoader]} pointerEvents="none">
@@ -607,18 +609,20 @@ export default function FeedbackScreen() {
                 </>
               ) : (
                 (() => {
-                  const showImageLoader = !isVideo && !!item.imageUri;
-                  const displayUri = item.imageUri || null;
-                  if (item.imageUri) {
+                  const overlayUri = effectiveSegmentedImages?.overlay_urls?.[0]?.url;
+                  const displayUri = (!overlayLoadFailed && overlayUri) ? overlayUri : item.imageUri || null;
+                  const showImageLoader = !isVideo && !!displayUri;
+                  if (displayUri) {
                     return (
                       <TouchableOpacity activeOpacity={1} onPress={() => { setFullImageUri(displayUri); setShowFullImageModal(true); }} style={styles.mediaTouchable}>
                         <OptimizedImage
-                          source={{ uri: item.imageUri }}
+                          source={{ uri: displayUri }}
                           style={styles.media}
                           resizeMode="cover"
                           cachePolicy="memory-disk"
                           priority="normal"
                           onImageLoad={() => setMediaLoading(false)}
+                          onError={() => { setMediaLoading(false); setOverlayLoadFailed(true); }}
                         />
                         {showImageLoader && mediaLoading && (
                           <View style={[StyleSheet.absoluteFill, styles.mediaLoader]} pointerEvents="none">

@@ -173,6 +173,22 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
     }
   };
 
+  const removeIngredientRow = (type: 'hidden' | 'extras', id: string) => {
+    if (type === 'hidden') {
+      setHiddenIngredients((prev) => prev.filter((r) => r.id !== id));
+    } else {
+      setExtras((prev) => prev.filter((r) => r.id !== id));
+    }
+  };
+
+  const handleIngredientAction = (type: 'hidden' | 'extras', id: string) => {
+    Alert.alert('Edit Ingredient', 'What would you like to do?', [
+      { text: 'Delete', style: 'destructive', onPress: () => removeIngredientRow(type, id) },
+      { text: 'Add New', onPress: () => addIngredientRow(type) },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
   const updateIngredientRow = (
     type: 'hidden' | 'extras',
     id: string,
@@ -500,9 +516,13 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
             onChangeText={(v) => updateIngredientRow(type, row.id, 'quantity', v)}
             placeholderTextColor="#999999"
           />
-          <View style={[{ flex: 2, alignItems: 'center', justifyContent: 'center' }]}>
+          <TouchableOpacity
+            style={{ flex: 2, alignItems: 'center', justifyContent: 'center' }}
+            onPress={() => handleIngredientAction(type, row.id)}
+            activeOpacity={0.7}
+          >
             <Ionicons name="pencil" size={18} color="#7BA21B" />
-          </View>
+          </TouchableOpacity>
         </View>
       ))}
       <View style={styles.addIngredientRow}>

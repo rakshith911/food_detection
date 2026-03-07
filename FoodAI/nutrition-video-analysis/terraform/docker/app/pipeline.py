@@ -2481,37 +2481,7 @@ class NutritionVideoPipeline:
                     continue
                 label_info[i][3] = new_ty
 
-        # --- draw leader lines + labels on the overlay ---
-        overlay_uint8 = (np.clip(overlay, 0, 1) * 255).astype(np.uint8)
-
-        for cx, cy, tx, ty, tw, th_text, baseline, display_label, bgr in label_info:
-            # Leader line from mask centroid to label centre (in the mask's colour)
-            label_cx = tx + tw // 2
-            label_cy = ty - th_text // 2
-            # Only draw if the label was actually displaced from the centroid
-            dist = ((label_cx - cx) ** 2 + (label_cy - cy) ** 2) ** 0.5
-            if dist > 15:
-                cv2.line(overlay_uint8, (cx, cy), (label_cx, label_cy), bgr, 1, cv2.LINE_AA)
-                # Small circle at the centroid anchor
-                cv2.circle(overlay_uint8, (cx, cy), 3, bgr, -1, cv2.LINE_AA)
-
-            # Dark background pill behind the text
-            cv2.rectangle(
-                overlay_uint8,
-                (tx - pad, ty - th_text - pad),
-                (tx + tw + pad, ty + baseline + pad),
-                (0, 0, 0),
-                cv2.FILLED,
-            )
-            # White label text for readability
-            cv2.putText(
-                overlay_uint8, display_label, (tx, ty),
-                font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA,
-            )
-
-        overlay = overlay_uint8.astype(np.float32) / 255.0
-
-        # Final image
+        # Final image — coloured fills only, no leader lines or text labels
         result = (np.clip(overlay, 0, 1) * 255).astype(np.uint8)
 
         overlay_filename = overlay_dir / f"frame_{frame_idx:05d}_all_masks.png"

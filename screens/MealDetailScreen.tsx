@@ -525,8 +525,9 @@ export default function MealDetailScreen() {
         <View style={styles.mediaContainer}>
           {(() => {
             const isVideo = !!item.videoUri;
-            const displayUri = resolvedImageUri || null;
-            const showImageLoader = !isVideo && !!resolvedImageUri;
+            const overlayUri = !overlayLoadFailed ? effectiveSegmentedImages?.overlay_urls?.[0]?.url : undefined;
+            const displayUri = overlayUri || resolvedImageUri || null;
+            const showImageLoader = !isVideo && !!displayUri;
             return (
           <>
           {isVideo && item.videoUri ? (
@@ -570,22 +571,23 @@ export default function MealDetailScreen() {
             </>
           ) : (
             // Show segmented overlay when available; on load error refetch by job_id or show original image
-            resolvedImageUri ? (
+            displayUri ? (
               <TouchableOpacity
                 style={styles.mediaTouchable}
                 activeOpacity={1}
                 onPress={() => {
-                  setFullImageUri(resolvedImageUri!);
+                  setFullImageUri(displayUri);
                   setShowFullImageModal(true);
                 }}
               >
                 <OptimizedImage
-                  source={{ uri: resolvedImageUri }}
+                  source={{ uri: displayUri }}
                   style={styles.media}
                   resizeMode="cover"
                   cachePolicy="memory-disk"
                   priority="normal"
                   onImageLoad={() => setMediaLoading(false)}
+                  onError={() => { setMediaLoading(false); setOverlayLoadFailed(true); }}
                 />
               </TouchableOpacity>
             ) : (
