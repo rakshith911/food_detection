@@ -4021,54 +4021,63 @@ Example:
         total_calories = 0
         
         for item_key, item_data in tracking_results['objects'].items():
-            label = item_data['label']
-            max_volume = item_data['statistics']['max_volume_ml']
-            
-            # Skip non-food items
-            if any(keyword in label.lower() for keyword in skip_keywords):
+            try:
+                label = item_data['label']
+                max_volume = item_data['statistics']['max_volume_ml']
+
+                # Skip non-food items
+                if any(keyword in label.lower() for keyword in skip_keywords):
+                    continue
+
+                gemini_grams_g = item_data['statistics'].get('gemini_grams_g')
+                gemini_kcal = item_data['statistics'].get('gemini_kcal')
+                quantity = item_data['statistics'].get('quantity', 1)
+                if quantity is None or quantity < 1:
+                    quantity = 1
+
+                # When we have both mass and calories from Gemini, use them and skip RAG
+                if gemini_kcal is not None and gemini_kcal > 0 and gemini_grams_g is not None and gemini_grams_g > 0:
+                    mass_g = float(gemini_grams_g)
+                    total_kcal = float(gemini_kcal)
+                    calories_per_100g = (total_kcal / mass_g) * 100.0 if mass_g else 0.0
+                    q = max(1, int(quantity))
+                    display_name = f"{q} × {label}" if q > 1 else label
+                    nutrition = {
+                        'food_name': label,
+                        'quantity': q,
+                        'volume_ml': max_volume,
+                        'density_g_per_ml': 0.0,
+                        'density_source': 'gemini',
+                        'density_similarity': 1.0,
+                        'mass_g': mass_g,
+                        'calories_per_100g': calories_per_100g,
+                        'total_calories': total_kcal,
+                        'calorie_source': 'gemini',
+                        'calorie_similarity': 1.0,
+                        'matched_food': label
+                    }
+                    logger.info(f"[{job_id}] Using Gemini nutrition for '{display_name}': {mass_g:.1f}g, {total_kcal:.0f} kcal (no RAG)")
+                else:
+                    # Use RAG: Gemini mass when available; calories from RAG unless we have gemini_kcal
+                    nutrition = rag.get_nutrition_for_food(label, max_volume, mass_g=gemini_grams_g, quantity=quantity)
+                    if gemini_kcal is not None and gemini_kcal > 0:
+                        nutrition['total_calories'] = float(gemini_kcal)
+                        nutrition['calorie_source'] = 'gemini'
+                        if nutrition.get('mass_g') and nutrition['mass_g'] > 0:
+                            nutrition['calories_per_100g'] = (float(gemini_kcal) / nutrition['mass_g']) * 100.0
+
+                item_mass = float(nutrition.get('mass_g') or 0.0)
+                item_calories = float(nutrition.get('total_calories') or 0.0)
+                nutrition['mass_g'] = item_mass
+                nutrition['total_calories'] = item_calories
+
+                nutrition_items.append(nutrition)
+                total_food_volume += max_volume
+                total_mass += item_mass
+                total_calories += item_calories
+            except Exception as e:
+                logger.warning(f"[{job_id}] Skipping item '{item_key}' due to error: {e}", exc_info=True)
                 continue
-            
-            gemini_grams_g = item_data['statistics'].get('gemini_grams_g')
-            gemini_kcal = item_data['statistics'].get('gemini_kcal')
-            quantity = item_data['statistics'].get('quantity', 1)
-            if quantity is None or quantity < 1:
-                quantity = 1
-            
-            # When we have both mass and calories from Gemini, use them and skip RAG
-            if gemini_kcal is not None and gemini_kcal > 0 and gemini_grams_g is not None and gemini_grams_g > 0:
-                mass_g = float(gemini_grams_g)
-                total_kcal = float(gemini_kcal)
-                calories_per_100g = (total_kcal / mass_g) * 100.0 if mass_g else 0.0
-                q = max(1, int(quantity))
-                display_name = f"{q} × {label}" if q > 1 else label
-                nutrition = {
-                    'food_name': label,
-                    'quantity': q,
-                    'volume_ml': max_volume,
-                    'density_g_per_ml': 0.0,
-                    'density_source': 'gemini',
-                    'density_similarity': 1.0,
-                    'mass_g': mass_g,
-                    'calories_per_100g': calories_per_100g,
-                    'total_calories': total_kcal,
-                    'calorie_source': 'gemini',
-                    'calorie_similarity': 1.0,
-                    'matched_food': label
-                }
-                logger.info(f"[{job_id}] Using Gemini nutrition for '{display_name}': {mass_g:.1f}g, {total_kcal:.0f} kcal (no RAG)")
-            else:
-                # Use RAG: Gemini mass when available; calories from RAG unless we have gemini_kcal
-                nutrition = rag.get_nutrition_for_food(label, max_volume, mass_g=gemini_grams_g, quantity=quantity)
-                if gemini_kcal is not None and gemini_kcal > 0:
-                    nutrition['total_calories'] = float(gemini_kcal)
-                    nutrition['calorie_source'] = 'gemini'
-                    if nutrition.get('mass_g') and nutrition['mass_g'] > 0:
-                        nutrition['calories_per_100g'] = (float(gemini_kcal) / nutrition['mass_g']) * 100.0
-            
-            nutrition_items.append(nutrition)
-            total_food_volume += max_volume
-            total_mass += nutrition['mass_g']
-            total_calories += nutrition['total_calories']
         
         # Collect unquantified ingredients from florence_detections
         all_unquantified = []

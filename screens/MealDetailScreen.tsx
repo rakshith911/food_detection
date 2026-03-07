@@ -525,10 +525,8 @@ export default function MealDetailScreen() {
         <View style={styles.mediaContainer}>
           {(() => {
             const isVideo = !!item.videoUri;
-            const hasOverlay = !overlayLoadFailed && effectiveSegmentedImages?.overlay_urls && effectiveSegmentedImages.overlay_urls.length > 0;
-            const overlayUrl = hasOverlay ? effectiveSegmentedImages!.overlay_urls![0].url : null;
-            const displayUri = overlayUrl || resolvedImageUri || null;
-            const showImageLoader = !isVideo && (!!displayUri || !!resolvedImageUri);
+            const displayUri = resolvedImageUri || null;
+            const showImageLoader = !isVideo && !!resolvedImageUri;
             return (
           <>
           {isVideo && item.videoUri ? (
@@ -572,35 +570,7 @@ export default function MealDetailScreen() {
             </>
           ) : (
             // Show segmented overlay when available; on load error refetch by job_id or show original image
-            displayUri ? (
-              <TouchableOpacity
-                style={styles.mediaTouchable}
-                activeOpacity={1}
-                onPress={() => {
-                  setFullImageUri(displayUri);
-                  setShowFullImageModal(true);
-                }}
-              >
-                {hasOverlay ? (
-                  <Image
-                    source={{ uri: overlayUrl }}
-                    style={styles.media}
-                    resizeMode="cover"
-                    onLoad={() => setMediaLoading(false)}
-                    onError={() => { setMediaLoading(false); handleOverlayLoadError(); }}
-                  />
-                ) : (
-                  <OptimizedImage
-                    source={{ uri: resolvedImageUri! }}
-                    style={styles.media}
-                    resizeMode="cover"
-                    cachePolicy="memory-disk"
-                    priority="normal"
-                    onImageLoad={() => setMediaLoading(false)}
-                  />
-                )}
-              </TouchableOpacity>
-            ) : resolvedImageUri ? (
+            resolvedImageUri ? (
               <TouchableOpacity
                 style={styles.mediaTouchable}
                 activeOpacity={1}

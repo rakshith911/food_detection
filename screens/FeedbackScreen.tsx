@@ -395,27 +395,8 @@ export default function FeedbackScreen() {
             </>
           ) : (
             (() => {
-              const hasOverlay = !overlayLoadFailed && effectiveSegmentedImages?.overlay_urls && effectiveSegmentedImages.overlay_urls.length > 0;
-              const showImageLoader = !isVideo && (hasOverlay || !!item.imageUri);
-              const displayUri = hasOverlay ? effectiveSegmentedImages!.overlay_urls![0].url : item.imageUri || null;
-              if (hasOverlay) {
-                return (
-                  <TouchableOpacity activeOpacity={1} onPress={() => { setFullImageUri(displayUri); setShowFullImageModal(true); }} style={styles.mediaTouchable}>
-                    <Image
-                      source={{ uri: effectiveSegmentedImages!.overlay_urls![0].url }}
-                      style={styles.media}
-                      resizeMode="cover"
-                      onLoad={() => setMediaLoading(false)}
-                      onError={() => { setMediaLoading(false); handleOverlayLoadError(); }}
-                    />
-                    {showImageLoader && mediaLoading && (
-                      <View style={[StyleSheet.absoluteFill, styles.mediaLoader]} pointerEvents="none">
-                        <ActivityIndicator size="large" color="#7BA21B" />
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                );
-              }
+              const showImageLoader = !isVideo && !!item.imageUri;
+              const displayUri = item.imageUri || null;
               if (item.imageUri) {
                 return (
                   <TouchableOpacity activeOpacity={1} onPress={() => { setFullImageUri(displayUri); setShowFullImageModal(true); }} style={styles.mediaTouchable}>
@@ -626,27 +607,8 @@ export default function FeedbackScreen() {
                 </>
               ) : (
                 (() => {
-                  const hasOverlay = !overlayLoadFailed && effectiveSegmentedImages?.overlay_urls && effectiveSegmentedImages.overlay_urls.length > 0;
-                  const showImageLoader = !isVideo && (hasOverlay || !!item.imageUri);
-                  const displayUri = hasOverlay ? effectiveSegmentedImages!.overlay_urls![0].url : item.imageUri || null;
-                  if (hasOverlay) {
-                    return (
-                      <TouchableOpacity activeOpacity={1} onPress={() => { setFullImageUri(displayUri); setShowFullImageModal(true); }} style={styles.mediaTouchable}>
-                        <Image
-                          source={{ uri: effectiveSegmentedImages!.overlay_urls![0].url }}
-                          style={styles.media}
-                          resizeMode="cover"
-                          onLoad={() => setMediaLoading(false)}
-                          onError={() => { setMediaLoading(false); handleOverlayLoadError(); }}
-                        />
-                        {showImageLoader && mediaLoading && (
-                          <View style={[StyleSheet.absoluteFill, styles.mediaLoader]} pointerEvents="none">
-                            <ActivityIndicator size="large" color="#7BA21B" />
-                          </View>
-                        )}
-                      </TouchableOpacity>
-                    );
-                  }
+                  const showImageLoader = !isVideo && !!item.imageUri;
+                  const displayUri = item.imageUri || null;
                   if (item.imageUri) {
                     return (
                       <TouchableOpacity activeOpacity={1} onPress={() => { setFullImageUri(displayUri); setShowFullImageModal(true); }} style={styles.mediaTouchable}>
