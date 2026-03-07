@@ -70,7 +70,11 @@ class NutritionVideoPipeline:
     
     @staticmethod
     def _build_user_context_suffix(user_context: dict) -> str:
-        """Build a prompt suffix from the user's questionnaire answers."""
+        """Build a prompt suffix from the user's questionnaire answers.
+        NOTE: extras and hidden_ingredients are injected into results separately —
+        do NOT ask Gemini to add them to visible_ingredients here (would duplicate them).
+        Only pass them as context so Gemini improves its overall analysis of the image.
+        """
         if not user_context:
             return ""
         lines = []
@@ -83,13 +87,8 @@ class NutritionVideoPipeline:
             if items:
                 lines.append(
                     f"- Ingredients present but not fully visible in the image: {items}. "
-                    "For each, convert the quantity to grams using standard conversions "
-                    "(e.g. 1 tbsp olive oil = 13.5g, 1 tbsp butter = 14.2g, 1 tbsp sugar = 12.5g, "
-                    "1 tsp salt = 6g, 1 cup flour = 120g, 1 cup rice = 185g, 1 cup milk = 240g). "
-                    "If given in grams already, use that directly. "
-                    "Set estimated_quantity_grams to the converted gram value and estimated_total_kcal "
-                    "based on that gram weight using standard nutritional values. "
-                    "Include each as a separate entry in visible_ingredients with a full-image bounding box."
+                    "Use this to improve your understanding of the dish and portion estimates. "
+                    "Do NOT add these as separate entries in visible_ingredients."
                 )
         extras = user_context.get('extras', [])
         if extras:
@@ -99,33 +98,21 @@ class NutritionVideoPipeline:
             )
             if items:
                 lines.append(
-                    f"- Extras or cooking additions that add calories: {items}. "
-                    "For each, convert the quantity to grams using standard conversions "
-                    "(e.g. 1 tbsp olive oil = 13.5g ~119 kcal, 1 tbsp butter = 14.2g ~102 kcal, "
-                    "1 tbsp sugar = 12.5g ~48 kcal, 1 tbsp honey = 21g ~64 kcal, "
-                    "1 tbsp cream = 15g ~52 kcal, 1 tsp oil = 4.5g ~40 kcal). "
-                    "If given in grams already, use that directly. "
-                    "Set estimated_quantity_grams to the converted gram value and estimated_total_kcal "
-                    "based on that gram weight using standard nutritional values. "
-                    "Include each as a separate entry in visible_ingredients with a full-image bounding box "
-                    "and factor their calories into the totals."
+                    f"- Extras or cooking additions noted by the user: {items}. "
+                    "These will be accounted for separately — do NOT add them as entries in visible_ingredients."
                 )
         recipe = user_context.get('recipe_description', '').strip()
         if recipe:
             lines.append(
                 f"- Recipe/menu description from user: \"{recipe}\". "
-                "Use this to improve accuracy of food identification, portion estimates, and "
-                "to infer any cooking ingredients (oils, butter, sauces) that add calories even if not visible. "
-                "If the description mentions specific quantities, convert them to grams and calculate KCal accordingly."
+                "Use this to improve accuracy of food identification and portion estimates."
             )
         if not lines:
             return ""
         return (
-            "\n\nADDITIONAL CONTEXT PROVIDED BY THE USER (treat as high-confidence information):\n"
+            "\n\nADDITIONAL CONTEXT PROVIDED BY THE USER:\n"
             + "\n".join(lines)
-            + "\nIMPORTANT: For every user-specified ingredient, always output estimated_quantity_grams "
-            "(converted from any unit to grams) and estimated_total_kcal (calculated from that gram weight). "
-            "Never output 0g for an ingredient the user has specified a quantity for.\n"
+            + "\n"
         )
 
     def process_image(self, image_path: Path, job_id: str, user_context: dict = None) -> Dict:
@@ -1170,18 +1157,34 @@ class NutritionVideoPipeline:
                 if not qty:
                     return None
                 qty = qty.strip().lower()
-                m = _re.match(r'(\d+(?:\.\d+)?)\s*g(?:rams?)?', qty)
+                # grams
+                m = _re.match(r'(\d+(?:\.\d+)?)\s*g(?:rams?)?$', qty)
                 if m:
                     return float(m.group(1))
-                m = _re.match(r'(\d+(?:\.\d+)?)\s*ml', qty)
+                # ml (approximate 1ml = 1g)
+                m = _re.match(r'(\d+(?:\.\d+)?)\s*ml$', qty)
                 if m:
                     return float(m.group(1))
-                m = _re.match(r'(\d+(?:\.\d+)?)\s*tbsp', qty)
+                # tablespoon / tbsp
+                m = _re.match(r'(\d+(?:\.\d+)?)\s*(?:tablespoons?|tbsp)', qty)
                 if m:
                     return float(m.group(1)) * 14.0
-                m = _re.match(r'(\d+(?:\.\d+)?)\s*tsp', qty)
+                # teaspoon / tsp
+                m = _re.match(r'(\d+(?:\.\d+)?)\s*(?:teaspoons?|tsp)', qty)
                 if m:
                     return float(m.group(1)) * 5.0
+                # cup
+                m = _re.match(r'(\d+(?:\.\d+)?)\s*cups?', qty)
+                if m:
+                    return float(m.group(1)) * 240.0
+                # ounce / oz
+                m = _re.match(r'(\d+(?:\.\d+)?)\s*(?:ounces?|oz)', qty)
+                if m:
+                    return float(m.group(1)) * 28.35
+                # kg
+                m = _re.match(r'(\d+(?:\.\d+)?)\s*kg', qty)
+                if m:
+                    return float(m.group(1)) * 1000.0
                 return None
 
             # Collect all items to inject
@@ -1204,8 +1207,10 @@ class NutritionVideoPipeline:
                         for i in items_to_inject
                     )
                     cal_prompt = (
-                        f"Estimate the calories for each of these food items at the given quantities: {items_desc}. "
-                        "Return ONLY a JSON array like: [{\"name\": \"butter\", \"kcal\": 72}, ...]. No extra text."
+                        f"For each of these food items at the given quantities: {items_desc}. "
+                        "Convert the quantity to grams and estimate the calories. "
+                        "Return ONLY a JSON array like: "
+                        "[{\"name\": \"butter\", \"grams\": 14.2, \"kcal\": 102}, ...]. No extra text."
                     )
                     cal_response = genai.GenerativeModel("gemini-2.5-flash").generate_content(cal_prompt)
                     cal_text = (cal_response.text or "").strip()
@@ -1217,8 +1222,13 @@ class NutritionVideoPipeline:
                     for entry in cal_data:
                         n = (entry.get('name') or '').strip().lower()
                         k = entry.get('kcal')
+                        g = entry.get('grams')
                         if n and k is not None:
                             gemini_kcal_map[n] = float(k)
+                        if n and g is not None:
+                            # Only use Gemini's gram estimate if local parsing returned None
+                            if n not in gemini_kcal_map or True:
+                                gemini_kcal_map[f"{n}__grams"] = float(g)
                     logger.info(f"[Gemini detection] Calorie estimates for injected items: {gemini_kcal_map}")
                 except Exception as e:
                     logger.warning(f"[Gemini detection] Could not estimate calories for injected items: {e}")
@@ -1226,8 +1236,11 @@ class NutritionVideoPipeline:
             for item in items_to_inject:
                 name = item['name']
                 g = _parse_grams_from_str(item.get('quantity', ''))
+                # Fall back to Gemini's gram estimate if local parsing couldn't determine grams
+                if g is None:
+                    g = gemini_kcal_map.get(f"{name.lower()}__grams")
                 kcal = gemini_kcal_map.get(name.lower())
-                boxes.append([0.0, 0.0, 1.0, 1.0])  # placeholder bbox
+                boxes.append([0.0, 0.0, 1.0, 1.0])  # placeholder bbox (bypasses SAM2 via tiny area)
                 labels.append(name)
                 grams_list.append(g)
                 quantity_list.append(1)
