@@ -841,7 +841,7 @@ export default function MealDetailScreen() {
                       pointerEvents="auto"
                     />
                   ) : (
-                    <Text style={styles.tableCellText}>{row.weight ? `${row.weight} g` : '—'}</Text>
+                    <Text style={styles.tableCellText}>{row.weight && row.weight !== '0' ? `${row.weight} g` : '—'}</Text>
                   )}
                 </View>
                 <View style={[styles.tableCell, { flex: 1 }]} pointerEvents="box-none">

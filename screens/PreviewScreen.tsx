@@ -341,7 +341,7 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
             dishContents = apiResult.items.map((item: any, index: number) => ({
               id: `${Date.now()}_${index}`,
               name: item.food_name || 'Unknown Food',
-              weight: item.mass_g ? Math.round(item.mass_g).toString() : '',
+              weight: item.mass_g && Math.round(item.mass_g) > 0 ? Math.round(item.mass_g).toString() : '',
               calories: Math.round(item.total_calories || item.calories || 0).toString(),
             }));
             mealName = apiResult.items[0]?.food_name || 'Analyzed Meal';
@@ -350,7 +350,7 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
             dishContents = apiResult.detailed_results.items.map((item: any, index: number) => ({
               id: `${Date.now()}_${index}`,
               name: item.food_name || 'Unknown Food',
-              weight: item.mass_g ? Math.round(item.mass_g).toString() : '',
+              weight: item.mass_g && Math.round(item.mass_g) > 0 ? Math.round(item.mass_g).toString() : '',
               calories: Math.round(item.total_calories || item.calories || 0).toString(),
             }));
             mealName = apiResult.detailed_results.items[0]?.food_name || 'Analyzed Meal';
