@@ -706,9 +706,18 @@ export default function MealDetailScreen() {
           </View>
 
           <View style={styles.mealActions}>
-            <TouchableOpacity style={styles.addButton} onPress={handleAddContent}>
-              <Text style={styles.addButtonText}>+ Add Ingredient</Text>
-            </TouchableOpacity>
+            {(() => {
+              const canAdd = !dishContents.some(r => !r.name.trim() || !r.calories.trim());
+              return (
+                <TouchableOpacity
+                  style={[styles.addButton, !canAdd && styles.addButtonDisabled]}
+                  onPress={() => canAdd && handleAddContent()}
+                  activeOpacity={canAdd ? 0.8 : 1}
+                >
+                  <Text style={styles.addButtonText}>+ Add Ingredient</Text>
+                </TouchableOpacity>
+              );
+            })()}
             <View style={styles.captureInfo}>
               <Text style={styles.captureValue}>
                 {captureDateText && captureTimeText
@@ -1033,7 +1042,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#7BA21B',
     paddingHorizontal: 16,
     paddingVertical: 8,
-    borderRadius: 6,
+    borderRadius: 24,
+  },
+  addButtonDisabled: {
+    backgroundColor: '#B5D068',
+    opacity: 0.6,
   },
   addButtonText: {
     color: '#FFFFFF',
@@ -1113,7 +1126,7 @@ const styles = StyleSheet.create({
     height: 56, // Fixed height
     width: '100%', // Fixed width
     backgroundColor: '#7BA21B',
-    borderRadius: 28,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',

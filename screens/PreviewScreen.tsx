@@ -30,9 +30,7 @@ import VectorBackButtonCircle from '../components/VectorBackButtonCircle';
 import AppHeader from '../components/AppHeader';
 import BottomButtonContainer from '../components/BottomButtonContainer';
 
-async function scheduleAnalysisCompleteNotification(mealName: string) {
-  const name = mealName?.trim();
-  if (!name) return;
+async function scheduleAnalysisCompleteNotification() {
   try {
     const { status } = await Notifications.getPermissionsAsync();
     if (status !== 'granted') {
@@ -45,9 +43,7 @@ async function scheduleAnalysisCompleteNotification(mealName: string) {
         importance: Notifications.AndroidImportance.DEFAULT,
       });
     }
-    const body = name === 'Detected Food'
-      ? 'Your analysis for food is ready'
-      : `Your analysis for ${name} is ready`;
+    const body = 'Your analysis is ready';
     await Notifications.scheduleNotificationAsync({
       content: {
         title: 'UKcal',
@@ -125,6 +121,7 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
   const [extras, setExtras] = useState<IngredientRow[]>([
     { id: '1', name: '', quantity: '' },
   ]);
+  const [editingIngredientId, setEditingIngredientId] = useState<string | null>(null);
   const [textInput, setTextInput] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isTextInputFocused, setIsTextInputFocused] = useState(false);
@@ -182,11 +179,14 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
   };
 
   const handleIngredientAction = (type: 'hidden' | 'extras', id: string) => {
-    Alert.alert('Edit Ingredient', 'What would you like to do?', [
-      { text: 'Delete', style: 'destructive', onPress: () => removeIngredientRow(type, id) },
-      { text: 'Add New', onPress: () => addIngredientRow(type) },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+    if (editingIngredientId === id) {
+      // Trash mode — delete directly, no popup
+      removeIngredientRow(type, id);
+      setEditingIngredientId(null);
+    } else {
+      // Pencil mode — enter edit mode (show trash icon)
+      setEditingIngredientId(id);
+    }
   };
 
   const updateIngredientRow = (
@@ -432,7 +432,7 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
         if (updateAnalysis.rejected.match(result_action)) {
           console.error('Error updating analysis:', result_action.error);
         } else {
-          scheduleAnalysisCompleteNotification((analysisResult as any).mealName ?? '');
+          scheduleAnalysisCompleteNotification();
         }
       }
 
@@ -491,15 +491,21 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
     type: 'hidden' | 'extras',
     rows: IngredientRow[],
     headerLabel: string
-  ) => (
+  ) => {
+    const lastRow = rows[rows.length - 1];
+    const canAddMore = lastRow ? (lastRow.name.trim().length > 0 && lastRow.quantity.trim().length > 0) : true;
+    return (
     <View style={styles.ingredientSection}>
       <View style={styles.tableDivider} />
       <View style={styles.tableHeader}>
         <Text style={[styles.tableHeaderText, { flex: 5 }]}>{headerLabel}</Text>
+        <View style={{ width: 8 }} />
         <Text style={[styles.tableHeaderText, { flex: 4 }]}>Quantity</Text>
-        <Text style={[styles.tableHeaderText, { flex: 2, textAlign: 'right' }]}>Action</Text>
+        <Text style={[styles.tableHeaderText, { flex: 2, textAlign: 'center' }]}>Action</Text>
       </View>
-      {rows.map((row) => (
+      {rows.map((row) => {
+        const isRowEditing = editingIngredientId === row.id;
+        return (
         <View key={row.id} style={styles.tableRow}>
           <TextInput
             style={[styles.tableInput, { flex: 5 }]}
@@ -521,22 +527,24 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
             onPress={() => handleIngredientAction(type, row.id)}
             activeOpacity={0.7}
           >
-            <Ionicons name="pencil" size={18} color="#7BA21B" />
+            <Ionicons name={isRowEditing ? 'trash' : 'pencil'} size={18} color={isRowEditing ? '#EF4444' : '#7BA21B'} />
           </TouchableOpacity>
         </View>
-      ))}
+        );
+      })}
       <View style={styles.addIngredientRow}>
         <TouchableOpacity
-          style={styles.addIngredientButton}
-          onPress={() => addIngredientRow(type)}
-          activeOpacity={0.8}
+          style={[styles.addIngredientButton, !canAddMore && styles.addIngredientButtonDisabled]}
+          onPress={() => canAddMore && addIngredientRow(type)}
+          activeOpacity={canAddMore ? 0.8 : 1}
         >
           <Ionicons name="add-circle" size={18} color="#FFFFFF" />
           <Text style={styles.addIngredientText}>Add Ingredient</Text>
         </TouchableOpacity>
       </View>
     </View>
-  );
+    );
+  };
 
   const renderStep1 = () => (
     <>
@@ -957,6 +965,10 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     gap: 6,
   },
+  addIngredientButtonDisabled: {
+    backgroundColor: '#B5D068',
+    opacity: 0.6,
+  },
   addIngredientText: {
     color: '#FFFFFF',
     fontSize: 14,
@@ -989,7 +1001,7 @@ const styles = StyleSheet.create({
     height: 56,
     width: '100%',
     backgroundColor: '#7BA21B',
-    borderRadius: 28,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#7BA21B',

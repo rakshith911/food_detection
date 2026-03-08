@@ -47,7 +47,9 @@ export default function CameraScreen() {
   const [isCameraActive, setIsCameraActive] = useState(false);
   const cameraRef = useRef<Camera>(null);
   const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const recordingAutoStopRef = useRef<NodeJS.Timeout | null>(null);
   const recordingStartTimeRef = useRef<number>(0);
+  const MAX_RECORDING_SECONDS = 5;
   const isTakingPhotoRef = useRef(false);
   const dispatch = useAppDispatch();
   const user = useAppSelector((state) => state.auth.user);
@@ -179,11 +181,18 @@ export default function CameraScreen() {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['videos'],
         allowsEditing: true,
+        videoMaxDuration: MAX_RECORDING_SECONDS,
         quality: 1,
       });
 
       if (!result.canceled && result.assets[0]) {
-        setSelectedVideo(result.assets[0].uri);
+        const asset = result.assets[0];
+        const durationSec = asset.duration ? asset.duration / 1000 : 0;
+        if (durationSec > MAX_RECORDING_SECONDS + 0.5) {
+          Alert.alert('Video Too Long', `Please select a video that is ${MAX_RECORDING_SECONDS} seconds or shorter.`);
+          return;
+        }
+        setSelectedVideo(asset.uri);
       }
     } catch (error) {
       console.error('Gallery error:', error);
@@ -199,13 +208,18 @@ export default function CameraScreen() {
         mediaTypes: ['images', 'videos'],
         allowsEditing: true,
         aspect: [4, 3],
+        videoMaxDuration: MAX_RECORDING_SECONDS,
         quality: 1,
       });
 
       if (!result.canceled && result.assets[0]) {
         const asset = result.assets[0];
-        // Check if it's a video or image based on the asset type
         if (asset.type === 'video') {
+          const durationSec = asset.duration ? asset.duration / 1000 : 0;
+          if (durationSec > MAX_RECORDING_SECONDS + 0.5) {
+            Alert.alert('Video Too Long', `Please select a video that is ${MAX_RECORDING_SECONDS} seconds or shorter.`);
+            return;
+          }
           setSelectedVideo(asset.uri);
         } else {
           setSelectedImage(asset.uri);
@@ -248,6 +262,14 @@ export default function CameraScreen() {
         setRecordingTime(prev => prev + 1);
       }, 1000);
 
+      // Auto-stop after 5 seconds
+      recordingAutoStopRef.current = setTimeout(async () => {
+        console.log('[Camera] Auto-stopping recording at 5s limit');
+        if (cameraRef.current) {
+          await cameraRef.current.stopRecording();
+        }
+      }, MAX_RECORDING_SECONDS * 1000);
+
       console.log('[Camera] Starting video recording...');
 
       // Start recording with vision camera
@@ -261,6 +283,10 @@ export default function CameraScreen() {
           if (recordingIntervalRef.current) {
             clearInterval(recordingIntervalRef.current);
             recordingIntervalRef.current = null;
+          }
+          if (recordingAutoStopRef.current) {
+            clearTimeout(recordingAutoStopRef.current);
+            recordingAutoStopRef.current = null;
           }
         },
         onRecordingError: (error) => {
@@ -279,6 +305,10 @@ export default function CameraScreen() {
             clearInterval(recordingIntervalRef.current);
             recordingIntervalRef.current = null;
           }
+          if (recordingAutoStopRef.current) {
+            clearTimeout(recordingAutoStopRef.current);
+            recordingAutoStopRef.current = null;
+          }
         },
       });
     } catch (error) {
@@ -289,6 +319,10 @@ export default function CameraScreen() {
         clearInterval(recordingIntervalRef.current);
         recordingIntervalRef.current = null;
       }
+      if (recordingAutoStopRef.current) {
+        clearTimeout(recordingAutoStopRef.current);
+        recordingAutoStopRef.current = null;
+      }
     }
   };
 
@@ -297,7 +331,10 @@ export default function CameraScreen() {
       console.log('[Camera] Cannot stop - camera ref or recording state invalid');
       return;
     }
-
+    if (recordingAutoStopRef.current) {
+      clearTimeout(recordingAutoStopRef.current);
+      recordingAutoStopRef.current = null;
+    }
     console.log('[Camera] Stopping recording...');
     await cameraRef.current.stopRecording();
   };

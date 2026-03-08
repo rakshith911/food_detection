@@ -66,7 +66,7 @@ export default function VideoTextTab() {
         
         // Start recording and store the promise
         recordingPromiseRef.current = cameraRef.current.recordAsync({
-          maxDuration: 30, // Limit to 30 seconds
+          maxDuration: 5, // Hard limit to 5 seconds
           quality: '720p',
         });
         
@@ -132,11 +132,18 @@ export default function VideoTextTab() {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['videos'],
         allowsEditing: true,
+        videoMaxDuration: 5,
         quality: 1,
       });
 
       if (!result.canceled && result.assets[0]) {
-        setRecordedVideo(result.assets[0].uri);
+        const asset = result.assets[0];
+        const durationSec = asset.duration ? asset.duration / 1000 : 0;
+        if (durationSec > 5.5) {
+          Alert.alert('Video Too Long', 'Please select a video that is 5 seconds or shorter.');
+          return;
+        }
+        setRecordedVideo(asset.uri);
         Alert.alert('Success', 'Video selected from gallery!');
       }
     } catch (error) {

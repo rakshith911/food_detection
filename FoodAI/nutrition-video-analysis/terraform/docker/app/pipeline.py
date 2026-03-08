@@ -128,6 +128,14 @@ class NutritionVideoPipeline:
         """
         logger.info(f"[{job_id}] Starting image processing: {image_path.name}")
 
+        # Reset per-job state so detections from previous jobs don't leak in
+        self.florence_detections = []
+        self.calibration = {
+            'pixels_per_cm': None,
+            'calibrated': False,
+            'reference_plane_depth_m': None,
+        }
+
         try:
             # Load image as a single frame
             img = cv2.imread(str(image_path))
@@ -191,6 +199,14 @@ class NutritionVideoPipeline:
             Complete results dictionary with tracking, volumes, and nutrition
         """
         logger.info(f"[{job_id}] Starting video processing: {video_path.name}")
+
+        # Reset per-job state so detections from previous jobs don't leak in
+        self.florence_detections = []
+        self.calibration = {
+            'pixels_per_cm': None,
+            'calibrated': False,
+            'reference_plane_depth_m': None,
+        }
 
         try:
             # Step 1: Load and prepare frames
@@ -350,7 +366,7 @@ class NutritionVideoPipeline:
                 use_video_detection = True
                 logger.info(f"[{job_id}] Using Gemini video detections for frame 0 only (one-shot only)")
             else:
-                logger.warning(f"[{job_id}] Gemini video one-shot failed; continuing with no detections (no frame-wise fallback)")
+                logger.warning(f"[{job_id}] Gemini video one-shot failed; falling back to frame-wise Gemini detection")
         
         # Get models (Florence only when not using Gemini for detection)
         florence_processor, florence_model = None, None
@@ -409,15 +425,13 @@ class NutritionVideoPipeline:
                     # Video: one-shot only — use precomputed detections at frame 0; never run frame-wise Gemini
                     detection_grams_list = []
                     detection_calories_list = []
-                    if is_video_one_shot_mode and (frame_idx > 0 or initial_video_detections is None):
+                    if is_video_one_shot_mode and frame_idx > 0:
+                        # Subsequent frames in one-shot mode — SAM2 handles tracking, skip re-detection
                         boxes = np.array([])
                         labels = []
                         detected_caption = None
                         unquantified_ingredients = []
-                        if frame_idx > 0:
-                            logger.info(f"[{job_id}] Frame {frame_idx}: Skipping re-detection (one-shot video only)")
-                        else:
-                            logger.info(f"[{job_id}] Frame 0: One-shot video had no detections (no frame-wise fallback)")
+                        logger.info(f"[{job_id}] Frame {frame_idx}: Skipping re-detection (one-shot video, SAM2 tracking)")
                     elif use_video_detection and frame_idx == 0 and initial_video_detections is not None:
                         # initial_video_detections: (boxes, labels, caption, grams_list, quantity_list [, ref_size])
                         unpacked = initial_video_detections

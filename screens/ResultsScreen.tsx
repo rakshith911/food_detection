@@ -801,7 +801,7 @@ const styles = StyleSheet.create({
     height: 56, // Fixed height
     width: '100%', // Fixed width
     backgroundColor: '#7BA21B',
-    borderRadius: 28,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',

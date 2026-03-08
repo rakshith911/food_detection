@@ -860,7 +860,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#7BA21B',
     paddingHorizontal: 16,
     paddingVertical: 8,
-    borderRadius: 6,
+    borderRadius: 24,
   },
   writeCommentButtonText: {
     color: '#FFFFFF',
@@ -936,7 +936,7 @@ const styles = StyleSheet.create({
     height: 56, // Fixed height
     width: '100%', // Fixed width
     backgroundColor: '#7BA21B',
-    borderRadius: 28,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',

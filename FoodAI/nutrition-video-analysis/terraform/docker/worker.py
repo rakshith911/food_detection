@@ -510,8 +510,8 @@ def process_message(message: dict, pipeline=None):
                 kcal = meal_summary.get('total_calories_kcal') or 0
                 send_expo_push_notification(
                     push_token=push_token,
-                    title="UKcal Analysis Complete",
-                    body=f"Your analysis is ready ({int(kcal)} kcal).",
+                    title="UKcal",
+                    body="Your analysis is complete",
                     data={"job_id": job_id, "status": "completed"},
                 )
 
