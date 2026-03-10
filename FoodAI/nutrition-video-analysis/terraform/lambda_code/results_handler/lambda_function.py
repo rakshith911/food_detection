@@ -137,7 +137,8 @@ def lambda_handler(event, context):
             if 'Contents' in segmented_objects and len(segmented_objects['Contents']) > 0:
                 segmented_images = {
                     'overlay_urls': [],
-                    'mask_urls': []
+                    'mask_urls': [],
+                    'video_overlay_url': None
                 }
                 
                 for obj in segmented_objects['Contents']:
@@ -160,7 +161,10 @@ def lambda_handler(event, context):
                             if len(parts) > 1:
                                 frame_match = parts[1].split('/')[0]
                         
-                        if 'overlays' in key and 'all_masks.png' in key:
+                        if key.endswith('.mp4'):
+                            # Segmented overlay video (e.g. segmented_overlay_video.mp4)
+                            segmented_images['video_overlay_url'] = presigned_url
+                        elif 'overlays' in key and 'all_masks.png' in key:
                             segmented_images['overlay_urls'].append({
                                 'frame': frame_match or '00000',
                                 'url': presigned_url,
@@ -179,9 +183,9 @@ def lambda_handler(event, context):
                         print(f"Warning: Could not generate URL for {key}: {e}")
                         continue
                 
-                if segmented_images['overlay_urls'] or segmented_images['mask_urls']:
+                if segmented_images['overlay_urls'] or segmented_images['mask_urls'] or segmented_images['video_overlay_url']:
                     result['segmented_images'] = segmented_images
-                    print(f"Added {len(segmented_images['overlay_urls'])} overlays and {len(segmented_images['mask_urls'])} masks")
+                    print(f"Added {len(segmented_images['overlay_urls'])} overlays, {len(segmented_images['mask_urls'])} masks, video_overlay={'yes' if segmented_images['video_overlay_url'] else 'no'}")
         except Exception as e:
             print(f"Warning: Could not generate segmented image URLs: {e}")
             # Don't fail if segmented images can't be listed

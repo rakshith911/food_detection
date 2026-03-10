@@ -95,6 +95,21 @@ export default function ResultsScreen({ navigation: navigationProp }: { navigati
 
   const deletingRef = useRef<Set<string>>(new Set());
   const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
+  // Resolved S3 URLs for videos whose local file:// URI is no longer on device
+  const [resolvedVideoUris, setResolvedVideoUris] = useState<Record<string, string>>({});
+  const fetchedVideoIds = useRef<Set<string>>(new Set());
+
+  // Proactively fetch S3 URLs for all video items so playback works even if local file is gone
+  useEffect(() => {
+    history.forEach(histItem => {
+      if (histItem.videoUri && histItem.job_id && !fetchedVideoIds.current.has(histItem.id)) {
+        fetchedVideoIds.current.add(histItem.id);
+        getImagePresignedUrl(histItem.job_id).then(url => {
+          if (url) setResolvedVideoUris(prev => ({ ...prev, [histItem.id]: url }));
+        });
+      }
+    });
+  }, [history]);
   const swipePositions = useRef<{ [key: string]: Animated.Value }>({});
   const [canShowTutorial, setCanShowTutorial] = useState(false); // Control when TutorialScreen can be shown
   const [isHistoryLoaded, setIsHistoryLoaded] = useState(false); // State to trigger re-renders when history is loaded
@@ -214,12 +229,19 @@ export default function ResultsScreen({ navigation: navigationProp }: { navigati
   // No need to navigate to it separately
   // Note: profileBelongsToCurrentUser is calculated at the top of the component (line 50)
 
-  const handleVideoPlay = (itemId: string, _videoUri: string) => {
-    // Toggle: if this video is playing, pause it; otherwise play this one (and implicit pause of any other via shouldPlay)
+  const handleVideoPlay = (itemId: string, videoUri: string, jobId?: string) => {
     if (playingVideoId === itemId) {
       setPlayingVideoId(null);
     } else {
-      setPlayingVideoId(itemId);
+      // If we don't have an S3 URL yet, fetch it first then play
+      if (!resolvedVideoUris[itemId] && jobId) {
+        getImagePresignedUrl(jobId).then(url => {
+          if (url) setResolvedVideoUris(prev => ({ ...prev, [itemId]: url }));
+          setPlayingVideoId(itemId);
+        });
+      } else {
+        setPlayingVideoId(itemId);
+      }
     }
   };
 
@@ -395,7 +417,8 @@ export default function ResultsScreen({ navigation: navigationProp }: { navigati
             {isVideo && item.videoUri ? (
               <>
                 <Video
-                  source={{ uri: item.videoUri }}
+                  key={resolvedVideoUris[item.id] || item.id}
+                  source={{ uri: resolvedVideoUris[item.id] || item.videoUri }}
                   style={styles.media}
                   resizeMode={ResizeMode.COVER}
                   isLooping={false}
@@ -411,7 +434,7 @@ export default function ResultsScreen({ navigation: navigationProp }: { navigati
                 {!isPlaying && (
                   <TouchableOpacity
                     style={styles.playOverlay}
-                    onPress={() => handleVideoPlay(item.id, item.videoUri!)}
+                    onPress={() => handleVideoPlay(item.id, item.videoUri!, item.job_id)}
                     activeOpacity={0.8}
                   >
                     <View style={styles.playCircle}>
@@ -422,7 +445,7 @@ export default function ResultsScreen({ navigation: navigationProp }: { navigati
                 {isPlaying && (
                   <TouchableOpacity
                     style={styles.playOverlay}
-                    onPress={() => handleVideoPlay(item.id, item.videoUri!)}
+                    onPress={() => handleVideoPlay(item.id, item.videoUri!, item.job_id)}
                     activeOpacity={0.8}
                   >
                     <View style={styles.playCircle}>

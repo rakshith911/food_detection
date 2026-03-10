@@ -210,6 +210,14 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
     if (isSubmitting) return;
 
     setIsSubmitting(true);
+
+    // Immediately let the user know — result will come via push notification
+    Alert.alert(
+      'Submitted!',
+      'We will notify you when the results are ready.',
+      [{ text: 'OK' }]
+    );
+
     let analysisId: string | null = null;
 
     try {
@@ -431,8 +439,6 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
 
         if (updateAnalysis.rejected.match(result_action)) {
           console.error('Error updating analysis:', result_action.error);
-        } else {
-          scheduleAnalysisCompleteNotification();
         }
       }
 
@@ -448,19 +454,15 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
 
       if (error?.message === 'Analysis timeout') {
         console.log('[PreviewScreen] Timeout — job remains queued in SQS, analysisId:', analysisId);
-        Alert.alert(
-          'Analysis Queued',
-          'We will notify you when your results are ready.',
-          [{ text: 'OK' }]
-        );
+        // Already shown the initial "we will notify you" alert — no second popup needed
       } else {
         console.log('[PreviewScreen] Real failure — marking analysisId as failed:', analysisId, 'error:', error?.message);
         if (analysisId && user?.email) {
           dispatch(updateAnalysisProgress({ id: analysisId, progress: 0, status: 'failed' }));
         }
         Alert.alert(
-          'Analysis Failed',
-          'We were unable to analyse your image at this time. Please try again later.',
+          'High Demand',
+          'We are receiving too many requests. We will notify you when its ready.',
           [{ text: 'OK' }]
         );
       }
@@ -527,7 +529,7 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
             onPress={() => handleIngredientAction(type, row.id)}
             activeOpacity={0.7}
           >
-            <Ionicons name={isRowEditing ? 'trash' : 'pencil'} size={18} color={isRowEditing ? '#EF4444' : '#7BA21B'} />
+            <Ionicons name={isRowEditing ? 'trash' : 'pencil'} size={18} color="#7BA21B" />
           </TouchableOpacity>
         </View>
         );
@@ -538,7 +540,9 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
           onPress={() => canAddMore && addIngredientRow(type)}
           activeOpacity={canAddMore ? 0.8 : 1}
         >
-          <Ionicons name="add-circle" size={18} color="#FFFFFF" />
+          <View style={styles.addIngredientIcon}>
+            <Text style={styles.addIngredientIconText}>+</Text>
+          </View>
           <Text style={styles.addIngredientText}>Add Ingredient</Text>
         </TouchableOpacity>
       </View>
@@ -636,13 +640,21 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
       </ScrollView>
 
       <BottomButtonContainer paddingHorizontal={10}>
-        <TouchableOpacity
-          style={styles.primaryButton}
-          onPress={handleNext}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.primaryButtonText}>Next</Text>
-        </TouchableOpacity>
+        {(() => {
+          const canProceed = !hiddenIngrYes || (
+            hiddenIngredients.length > 0 &&
+            hiddenIngredients.every(r => r.name.trim().length > 0 && r.quantity.trim().length > 0)
+          );
+          return (
+            <TouchableOpacity
+              style={[styles.primaryButton, !canProceed && styles.primaryButtonDisabled]}
+              onPress={canProceed ? handleNext : undefined}
+              activeOpacity={canProceed ? 0.8 : 1}
+            >
+              <Text style={styles.primaryButtonText}>Next</Text>
+            </TouchableOpacity>
+          );
+        })()}
       </BottomButtonContainer>
     </>
   );
@@ -669,13 +681,21 @@ export default function PreviewScreen({ imageUri, videoUri, onBack, onAnalyze }:
       </ScrollView>
 
       <BottomButtonContainer paddingHorizontal={10}>
-        <TouchableOpacity
-          style={styles.primaryButton}
-          onPress={handleNext}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.primaryButtonText}>Next</Text>
-        </TouchableOpacity>
+        {(() => {
+          const canProceed = !extrasYes || (
+            extras.length > 0 &&
+            extras.every(r => r.name.trim().length > 0 && r.quantity.trim().length > 0)
+          );
+          return (
+            <TouchableOpacity
+              style={[styles.primaryButton, !canProceed && styles.primaryButtonDisabled]}
+              onPress={canProceed ? handleNext : undefined}
+              activeOpacity={canProceed ? 0.8 : 1}
+            >
+              <Text style={styles.primaryButtonText}>Next</Text>
+            </TouchableOpacity>
+          );
+        })()}
       </BottomButtonContainer>
     </>
   );
@@ -968,6 +988,20 @@ const styles = StyleSheet.create({
   addIngredientButtonDisabled: {
     backgroundColor: '#B5D068',
     opacity: 0.6,
+  },
+  addIngredientIcon: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addIngredientIconText: {
+    color: '#7BA21B',
+    fontSize: 16,
+    fontWeight: '700',
+    lineHeight: 20,
   },
   addIngredientText: {
     color: '#FFFFFF',

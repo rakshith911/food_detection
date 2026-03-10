@@ -85,6 +85,8 @@ export default function MealDetailScreen() {
     );
   }
 
+  const isVideo = !!item.videoUri;
+
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [editingMealName, setEditingMealName] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -97,8 +99,11 @@ export default function MealDetailScreen() {
   const [refreshedSegmentedImages, setRefreshedSegmentedImages] = useState<SegmentedImages | null>(null);
   const [refreshingOverlay, setRefreshingOverlay] = useState(false);
   const [mediaLoading, setMediaLoading] = useState(true);
+  const [videoOverlayError, setVideoOverlayError] = useState(false);
   // Resolved image URI: falls back to S3 presigned URL when the local file is from another device
   const [resolvedImageUri, setResolvedImageUri] = useState<string | undefined>(item?.imageUri);
+  // Resolved video URI: falls back to S3 presigned URL when the local file is gone
+  const [resolvedVideoUri, setResolvedVideoUri] = useState<string | undefined>(item?.videoUri);
 
   useEffect(() => {
     // Image was already uploaded to S3 during analysis — retrieve it by job_id
@@ -110,6 +115,17 @@ export default function MealDetailScreen() {
       setResolvedImageUri(item?.imageUri);
     }
   }, [item?.id, item?.job_id, item?.imageUri]);
+
+  useEffect(() => {
+    // Video was uploaded to S3 — retrieve presigned URL so it plays even if local file is gone
+    if (item?.job_id && item?.videoUri) {
+      getImagePresignedUrl(item.job_id)
+        .then(url => { if (url) setResolvedVideoUri(url); })
+        .catch(() => setResolvedVideoUri(item?.videoUri));
+    } else {
+      setResolvedVideoUri(item?.videoUri);
+    }
+  }, [item?.id, item?.job_id, item?.videoUri]);
   
   // Effective overlay: use refreshed URLs if we got them, else stored
   const effectiveSegmentedImages = refreshedSegmentedImages ?? item?.segmented_images;
@@ -119,6 +135,7 @@ export default function MealDetailScreen() {
     setOverlayLoadFailed(false);
     setRefreshedSegmentedImages(null);
     setMediaLoading(true);
+    setVideoOverlayError(false);
   }, [item?.id]);
 
   // Show loader again when overlay URL changes (e.g. after refetch)
@@ -126,16 +143,23 @@ export default function MealDetailScreen() {
     setMediaLoading(true);
   }, [effectiveSegmentedImages?.overlay_urls?.[0]?.url]);
 
-  // When we have job_id but no overlay URLs (e.g. never saved), fetch once so segmented images load
+  // Fetch segmented image URLs on open:
+  // - Videos: always refetch (presigned URLs expire after 1h)
+  // - Images: skip if overlay already saved
   useEffect(() => {
-    if (!item?.job_id || !user?.email || effectiveSegmentedImages?.overlay_urls?.length || refreshingOverlay) return;
+    const skipFetch = isVideo
+      ? false
+      : !!effectiveSegmentedImages?.overlay_urls?.length;
+    if (!item?.job_id || !user?.email || skipFetch || refreshingOverlay) return;
     let cancelled = false;
     (async () => {
       setRefreshingOverlay(true);
       try {
         const fresh = await nutritionAnalysisAPI.getResults(item.job_id!, true);
         if (cancelled) return;
-        if (fresh?.segmented_images?.overlay_urls?.length) {
+        const hasResult = fresh?.segmented_images?.overlay_urls?.length || fresh?.segmented_images?.video_overlay_url;
+        if (hasResult) {
+          setVideoOverlayError(false);
           setRefreshedSegmentedImages(fresh.segmented_images);
           await dispatch(updateAnalysis({
             userEmail: user.email,
@@ -157,7 +181,7 @@ export default function MealDetailScreen() {
       setRefreshingOverlay(true);
       try {
         const fresh = await nutritionAnalysisAPI.getResults(item.job_id, true);
-        if (fresh?.segmented_images?.overlay_urls?.length) {
+        if (fresh?.segmented_images?.overlay_urls?.length || fresh?.segmented_images?.video_overlay_url) {
           setRefreshedSegmentedImages(fresh.segmented_images);
           await dispatch(updateAnalysis({
             userEmail: user.email,
@@ -456,8 +480,6 @@ export default function MealDetailScreen() {
     }
   };
 
-  const isVideo = !!item.videoUri;
-
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <StatusBar barStyle="dark-content" />
@@ -524,16 +546,23 @@ export default function MealDetailScreen() {
         {/* Media Preview */}
         <View style={styles.mediaContainer}>
           {(() => {
-            const isVideo = !!item.videoUri;
             const overlayUri = !overlayLoadFailed ? effectiveSegmentedImages?.overlay_urls?.[0]?.url : undefined;
+            const videoOverlayUrl = (!overlayLoadFailed && !videoOverlayError)
+              ? effectiveSegmentedImages?.video_overlay_url ?? null
+              : null;
             const displayUri = overlayUri || resolvedImageUri || null;
             const showImageLoader = !isVideo && !!displayUri;
+            // When playing: try segmented overlay video first, fall back to original (from S3 if local is gone)
+            // When paused: just show the original video thumbnail
+            const originalVideoUri = resolvedVideoUri || item.videoUri;
+            const videoSource = isVideo ? (isVideoPlaying ? (videoOverlayUrl || originalVideoUri) : originalVideoUri) : null;
             return (
           <>
-          {isVideo && item.videoUri ? (
+          {isVideo && videoSource ? (
             <>
               <Video
-                source={{ uri: item.videoUri }}
+                key={videoSource}
+                source={{ uri: videoSource }}
                 style={styles.media}
                 resizeMode={ResizeMode.COVER}
                 isLooping={false}
@@ -543,6 +572,10 @@ export default function MealDetailScreen() {
                 onPlaybackStatusUpdate={(status) => {
                   if (status.isLoaded && status.didJustFinish) {
                     setIsVideoPlaying(false);
+                  }
+                  // If overlay video errors, fall back to original
+                  if (!status.isLoaded && (status as any).error && videoOverlayUrl) {
+                    setVideoOverlayError(true);
                   }
                 }}
               />
@@ -714,7 +747,10 @@ export default function MealDetailScreen() {
                   onPress={() => canAdd && handleAddContent()}
                   activeOpacity={canAdd ? 0.8 : 1}
                 >
-                  <Text style={styles.addButtonText}>+ Add Ingredient</Text>
+                  <View style={styles.addButtonIcon}>
+                    <Text style={styles.addButtonIconText}>+</Text>
+                  </View>
+                  <Text style={styles.addButtonText}>Add Ingredient</Text>
                 </TouchableOpacity>
               );
             })()}
@@ -887,10 +923,14 @@ export default function MealDetailScreen() {
 
       {/* Next Button - Fixed at Bottom */}
       <BottomButtonContainer>
+        {(() => {
+          const hasIncompleteRow = dishContents.some(r => !r.name.trim() || !r.calories.trim());
+          const canProceed = !isSaving && !hasIncompleteRow;
+          return (
         <TouchableOpacity
-          style={[styles.nextButton, isSaving && styles.nextButtonDisabled]}
+          style={[styles.nextButton, !canProceed && styles.nextButtonDisabled]}
           onPress={async () => {
-            if (isSaving) return; // Prevent multiple clicks while saving
+            if (!canProceed) return;
             
             setEditingRowId(null);
             Keyboard.dismiss();
@@ -912,12 +952,14 @@ export default function MealDetailScreen() {
               (navigation as any).navigate('Feedback', { item: updatedItem });
             }
           }}
-          disabled={isSaving}
+          disabled={!canProceed}
         >
           <Text style={styles.nextButtonText}>
             {isSaving ? 'Saving...' : 'Next'}
           </Text>
         </TouchableOpacity>
+          );
+        })()}
       </BottomButtonContainer>
         </Animated.View>
       </PanGestureHandler>
@@ -1047,6 +1089,20 @@ const styles = StyleSheet.create({
   addButtonDisabled: {
     backgroundColor: '#B5D068',
     opacity: 0.6,
+  },
+  addButtonIcon: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addButtonIconText: {
+    color: '#7BA21B',
+    fontSize: 16,
+    fontWeight: '700',
+    lineHeight: 20,
   },
   addButtonText: {
     color: '#FFFFFF',

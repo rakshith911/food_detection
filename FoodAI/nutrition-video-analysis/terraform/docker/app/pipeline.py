@@ -15,6 +15,7 @@ import sys
 import re
 from datetime import datetime
 import os
+import subprocess
 import boto3
 
 logger = logging.getLogger(__name__)
@@ -2416,7 +2417,7 @@ class NutritionVideoPipeline:
         color_bgr_map = {}
         for idx, obj_id in enumerate(obj_ids_sorted):
             r, g, b = self._get_distinct_color_rgb(idx)
-            color_bgr_map[obj_id] = (b, g, r)  # OpenCV uses BGR
+            color_bgr_map[obj_id] = (r, g, b)  # Frame is RGB, so store colors as RGB
 
         # --- draw coloured masks and collect label info ---
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -2499,7 +2500,8 @@ class NutritionVideoPipeline:
         result = (np.clip(overlay, 0, 1) * 255).astype(np.uint8)
 
         overlay_filename = overlay_dir / f"frame_{frame_idx:05d}_all_masks.png"
-        cv2.imwrite(str(overlay_filename), result)
+        # Frame is RGB; use PIL to save so channels are stored correctly for web/mobile viewers
+        Image.fromarray(result).save(str(overlay_filename))
 
         # Upload only the overlay to S3 (no individual masks)
         self._upload_segmented_images_to_s3(job_id, overlay_dir, frame_idx)
@@ -2680,7 +2682,25 @@ class NutritionVideoPipeline:
                 # so no need for a stacked label list at the top of the frame.
                 writer.write(overlay_uint8)
             writer.release()
-            logger.info(f"[{job_id}] Saved segmented overlay video: {out_video_path}")
+            logger.info(f"[{job_id}] Saved segmented overlay video (mp4v): {out_video_path}")
+
+            # Re-encode to H.264 so iOS/Android can play it correctly via expo-av
+            _tmp = out_video_path.with_suffix('.raw.mp4')
+            try:
+                out_video_path.rename(_tmp)
+                subprocess.run(
+                    ['ffmpeg', '-y', '-i', str(_tmp),
+                     '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+                     '-movflags', '+faststart',
+                     str(out_video_path)],
+                    check=True, capture_output=True
+                )
+                _tmp.unlink()
+                logger.info(f"[{job_id}] Re-encoded overlay video to H.264")
+            except Exception as _enc_err:
+                logger.warning(f"[{job_id}] FFmpeg H.264 re-encode failed ({_enc_err}); uploading mp4v")
+                if _tmp.exists():
+                    _tmp.rename(out_video_path)
             # Upload to S3 (same prefix as segmented images)
             if S3_RESULTS_BUCKET and UPLOAD_SEGMENTED_IMAGES and out_video_path.exists():
                 try:
