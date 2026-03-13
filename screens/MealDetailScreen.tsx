@@ -566,22 +566,40 @@ export default function MealDetailScreen() {
           <>
           {isVideo && videoSource ? (
             <>
+              {/* Mount both videos simultaneously so the segmented one buffers in background.
+                  Visibility toggled via opacity to avoid brown-screen loading flash on play. */}
+              {videoOverlayUrl && (
+                <Video
+                  key={videoOverlayUrl}
+                  source={{ uri: videoOverlayUrl }}
+                  style={[styles.media, { position: 'absolute', top: 0, left: 0, opacity: isVideoPlaying ? 1 : 0 }]}
+                  resizeMode={ResizeMode.COVER}
+                  isLooping={false}
+                  isMuted={false}
+                  shouldPlay={isVideoPlaying}
+                  useNativeControls={false}
+                  onPlaybackStatusUpdate={(status) => {
+                    if (status.isLoaded && status.didJustFinish) {
+                      setIsVideoPlaying(false);
+                    }
+                    if (!status.isLoaded && (status as any).error) {
+                      setVideoOverlayError(true);
+                    }
+                  }}
+                />
+              )}
               <Video
-                key={videoSource}
-                source={{ uri: videoSource }}
-                style={styles.media}
+                key={originalVideoUri ?? 'original'}
+                source={{ uri: originalVideoUri ?? '' }}
+                style={[styles.media, { opacity: (isVideoPlaying && videoOverlayUrl && !videoOverlayError) ? 0 : 1 }]}
                 resizeMode={ResizeMode.COVER}
                 isLooping={false}
-                isMuted={false}
-                shouldPlay={isVideoPlaying}
+                isMuted={true}
+                shouldPlay={isVideoPlaying && (!videoOverlayUrl || videoOverlayError)}
                 useNativeControls={false}
                 onPlaybackStatusUpdate={(status) => {
                   if (status.isLoaded && status.didJustFinish) {
                     setIsVideoPlaying(false);
-                  }
-                  // If overlay video errors, fall back to original
-                  if (!status.isLoaded && (status as any).error && videoOverlayUrl) {
-                    setVideoOverlayError(true);
                   }
                 }}
               />

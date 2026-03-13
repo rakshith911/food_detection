@@ -78,6 +78,37 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
+// Video player for dashboard cards — uses a ref to seek to frame 0 on load so the
+// thumbnail renders immediately without requiring expo-video-thumbnails (no native rebuild).
+function VideoCardPlayer({
+  uri, style, isPlaying, onFinish,
+}: { uri: string; style: any; isPlaying: boolean; onFinish: () => void }) {
+  const videoRef = useRef<Video>(null);
+  const didSeek = useRef(false);
+  return (
+    <Video
+      ref={videoRef}
+      source={{ uri }}
+      style={style}
+      resizeMode={ResizeMode.COVER}
+      isLooping={false}
+      isMuted={!isPlaying}
+      shouldPlay={isPlaying}
+      useNativeControls={false}
+      onReadyForDisplay={() => {
+        if (!didSeek.current) {
+          didSeek.current = true;
+          // Seek to 0 to force first-frame render as thumbnail
+          videoRef.current?.setStatusAsync({ positionMillis: 0, shouldPlay: false });
+        }
+      }}
+      onPlaybackStatusUpdate={(status) => {
+        if (status.isLoaded && status.didJustFinish) onFinish();
+      }}
+    />
+  );
+}
+
 export default function ResultsScreen({ navigation: navigationProp }: { navigation?: any }) {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
@@ -129,6 +160,7 @@ export default function ResultsScreen({ navigation: navigationProp }: { navigati
       }
     });
   }, [history]);
+
   const swipePositions = useRef<{ [key: string]: Animated.Value }>({});
   const [canShowTutorial, setCanShowTutorial] = useState(false); // Control when TutorialScreen can be shown
   const [isHistoryLoaded, setIsHistoryLoaded] = useState(false); // State to trigger re-renders when history is loaded
@@ -433,21 +465,11 @@ export default function ResultsScreen({ navigation: navigationProp }: { navigati
           <View style={styles.mediaWrapper}>
             {isVideo && item.videoUri ? (
               <>
-                <Video
-                  key={item.id}
-                  source={{ uri: resolvedVideoUris[item.id] || item.videoUri }}
+                <VideoCardPlayer
+                  uri={resolvedVideoUris[item.id] || item.videoUri}
                   style={styles.media}
-                  resizeMode={ResizeMode.COVER}
-                  isLooping={false}
-                  isMuted={true}
-                  shouldPlay={isPlaying}
-                  useNativeControls={false}
-                  positionMillis={0}
-                  onPlaybackStatusUpdate={(status) => {
-                    if (status.isLoaded && status.didJustFinish) {
-                      setPlayingVideoId(null);
-                    }
-                  }}
+                  isPlaying={isPlaying}
+                  onFinish={() => setPlayingVideoId(null)}
                 />
                 <TouchableOpacity
                   style={styles.playOverlay}

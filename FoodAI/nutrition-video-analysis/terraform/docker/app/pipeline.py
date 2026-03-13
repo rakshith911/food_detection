@@ -2612,10 +2612,24 @@ class NutritionVideoPipeline:
             cap.release()
             logger.warning(f"[{job_id}] Video longer than {max_duration_sec}s; skipping segmented video")
             return
-        # Sample at most 15 frames evenly to avoid SAM2 CPU bottleneck (141 frames → ~15)
-        sample_fps = min(fps, 5.0)
+        # Detect video rotation metadata (iPhone videos are stored sideways with rotate tag)
+        try:
+            probe = subprocess.run(
+                ['ffprobe', '-v', 'quiet', '-select_streams', 'v:0',
+                 '-show_entries', 'stream_tags=rotate', '-of', 'json', str(video_path)],
+                capture_output=True, text=True
+            )
+            import json as _json
+            _probe_data = _json.loads(probe.stdout or '{}')
+            video_rotation = int(_probe_data.get('streams', [{}])[0].get('tags', {}).get('rotate', 0))
+        except Exception:
+            video_rotation = 0
+        logger.info(f"[{job_id}] Video rotation metadata: {video_rotation}°")
+
+        # Sample at most 40 frames (8fps) — denser than 15 so SAM2 tracking stays accurate
+        sample_fps = min(fps, 8.0)
         sample_step = max(1, round(fps / sample_fps))
-        max_sampled = 15
+        max_sampled = 40
         frames_list = []
         frame_num = 0
         while True:
@@ -2713,19 +2727,30 @@ class NutritionVideoPipeline:
             writer.release()
             logger.info(f"[{job_id}] Saved segmented overlay video (mp4v): {out_video_path}")
 
-            # Re-encode to H.264 so iOS/Android can play it correctly via expo-av
+            # Re-encode to H.264 so iOS/Android can play it correctly via expo-av.
+            # Also bake in the original video's rotation so the output displays upright
+            # (cv2 ignores rotation metadata; we must apply it explicitly in ffmpeg).
             _tmp = out_video_path.with_suffix('.raw.mp4')
             try:
                 out_video_path.rename(_tmp)
-                subprocess.run(
-                    ['ffmpeg', '-y', '-i', str(_tmp),
-                     '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-                     '-movflags', '+faststart',
-                     str(out_video_path)],
-                    check=True, capture_output=True
-                )
+                # Build vf filter to rotate frames to match original orientation
+                if video_rotation == 90:
+                    _vf = 'transpose=1'      # 90° clockwise
+                elif video_rotation == 180:
+                    _vf = 'transpose=2,transpose=2'   # 180°
+                elif video_rotation == 270 or video_rotation == -90:
+                    _vf = 'transpose=2'      # 90° counter-clockwise
+                else:
+                    _vf = None
+                _ffmpeg_cmd = ['ffmpeg', '-y', '-i', str(_tmp),
+                               '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+                               '-movflags', '+faststart']
+                if _vf:
+                    _ffmpeg_cmd += ['-vf', _vf]
+                _ffmpeg_cmd.append(str(out_video_path))
+                subprocess.run(_ffmpeg_cmd, check=True, capture_output=True)
                 _tmp.unlink()
-                logger.info(f"[{job_id}] Re-encoded overlay video to H.264")
+                logger.info(f"[{job_id}] Re-encoded overlay video to H.264 (rotation={video_rotation}°)")
             except Exception as _enc_err:
                 logger.warning(f"[{job_id}] FFmpeg H.264 re-encode failed ({_enc_err}); uploading mp4v")
                 if _tmp.exists():
