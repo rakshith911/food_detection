@@ -63,7 +63,19 @@ def _delete_s3_prefix(bucket, prefix):
 
 
 def _handle_delete_account(user_id, event):
-    """Wipe all data for a user across S3 buckets and DynamoDB."""
+    """
+    Remove all identity links for a user on account deletion.
+
+    - Deletes the user's profile/history backup from S3 (the index that links
+      userId -> their jobs). This severs the connection between the account and
+      the underlying job data.
+    - Job data (uploaded videos, analysis results, segmented images) is kept
+      as-is under its UUID-based keys — already anonymous with no user reference.
+    - Deletes the DynamoDB identity record.
+
+    Result: the user can sign up fresh and start from scratch. The retained job
+    data is fully anonymous and can be used for analytics / ML training.
+    """
     body = {}
     try:
         raw = event.get('body') or '{}'
@@ -75,44 +87,35 @@ def _handle_delete_account(user_id, event):
     if not isinstance(job_ids, list):
         job_ids = []
 
-    deleted_summary = {}
+    summary = {}
 
-    # 1. Delete user backup data from ukcal-user-uploads
+    # 1. Delete user backup data (profile.json, history.json) — this is the
+    #    only thing that links userId to their job UUIDs. Removing it makes
+    #    all job data anonymous without touching the job objects themselves.
     user_prefix = f'{S3_PREFIX}/{user_id}/'
     n = _delete_s3_prefix(BUCKET, user_prefix)
-    deleted_summary['user_backup'] = n
-    print(f'[AccountDelete] Deleted {n} objects from {BUCKET}/{user_prefix}')
+    summary['user_backup_deleted'] = n
+    print(f'[AccountDelete] Removed {n} identity objects from {BUCKET}/{user_prefix}')
 
-    # 2. Delete per-job data for each job_id
-    jobs_deleted = 0
-    for job_id in job_ids:
-        if not job_id or not isinstance(job_id, str):
-            continue
-        # Uploaded video/image
-        n = _delete_s3_prefix(VIDEOS_BUCKET, f'uploads/{job_id}/')
-        jobs_deleted += n
-        # Analysis results JSON
-        n = _delete_s3_prefix(RESULTS_BUCKET, f'results/{job_id}/')
-        jobs_deleted += n
-        # Segmented images + overlay video
-        n = _delete_s3_prefix(RESULTS_BUCKET, f'segmented_images/{job_id}/')
-        jobs_deleted += n
-    deleted_summary['job_data'] = jobs_deleted
-    print(f'[AccountDelete] Deleted {jobs_deleted} job objects across {len(job_ids)} jobs')
+    # 2. Job data (uploads/, results/, segmented_images/) is intentionally
+    #    retained — keys are random UUIDs with no user reference, so the data
+    #    is already anonymous once the user backup above is removed.
+    summary['job_data_retained'] = len(job_ids)
+    print(f'[AccountDelete] Retained {len(job_ids)} jobs as anonymous data (no user link remains)')
 
-    # 3. Delete DynamoDB business profile
+    # 3. Delete DynamoDB identity record
     try:
         table = dynamodb.Table(DYNAMO_TABLE)
         table.delete_item(Key={'userId': user_id})
-        deleted_summary['dynamo'] = True
+        summary['dynamo_deleted'] = True
         print(f'[AccountDelete] Deleted DynamoDB profile for {user_id}')
     except Exception as e:
-        deleted_summary['dynamo'] = False
+        summary['dynamo_deleted'] = False
         print(f'[AccountDelete] DynamoDB delete failed (non-fatal): {e}')
 
     return _response(200, {
-        'message': 'Account data deleted',
-        'deleted': deleted_summary,
+        'message': 'Account identity removed. Job data retained anonymously.',
+        'summary': summary,
     })
 
 
